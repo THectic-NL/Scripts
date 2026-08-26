@@ -96,7 +96,7 @@ Invoke-Cmd() {
 # === Settings ===
 LOG_FILE="/tmp/kubernetes_install_$(date +%Y%m%d_%H%M%S).log"
 
-K8S_VERSION="${K8S_VERSION:-v1.36.4}"
+K8S_VERSION="${K8S_VERSION:-v1.37.0}"
 MINIKUBE_VERSION="${MINIKUBE_VERSION:-v1.38.1}"
 # pkgs.k8s.io repos are per minor version (v1.36), not per patch release.
 K8S_CHANNEL="${K8S_VERSION%.*}"
