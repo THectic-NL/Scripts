@@ -97,7 +97,7 @@ Show-Usage() {
 Usage: update-nginx-checksums.sh [--apply]
 
 Options:
-  --apply   Apply calculated checksums to nginx/nginx_installer.sh and nginx/nginx_installer.ps1 without prompting
+  --apply   Apply calculated checksums to nginx/nginx_installer.sh without prompting
   -h, --help  Show this help
 EOF
 }
@@ -124,7 +124,6 @@ done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 readonly BASH_INSTALLER="$REPO_ROOT/nginx/nginx_installer.sh"
-readonly PS_INSTALLER="$REPO_ROOT/nginx/nginx_installer.ps1"
 
 cd "$REPO_ROOT"
 
@@ -137,12 +136,6 @@ Set-BashVar() {
     local key=$1
     local value=$2
     sed -i "s/^${key}=\"[^\"]*\"$/${key}=\"${value}\"/" "$BASH_INSTALLER"
-}
-
-Set-PsVar() {
-    local key=$1
-    local value=$2
-    sed -i "s#^\\(\\\$Script:${key}[[:space:]]*=[[:space:]]*'\\)[^']*'#\\1${value}'#" "$PS_INSTALLER"
 }
 
 Get-UrlHash() {
@@ -231,13 +224,5 @@ Set-BashVar HEADERS_MORE_SHA256 "$HEADERS_MORE_SHA256"
 Set-BashVar ZSTD_MODULE_SHA256 "$ZSTD_MODULE_SHA256"
 Set-BashVar ACME_MODULE_SHA256 "$ACME_MODULE_SHA256"
 
-Set-PsVar NGINX_SHA256 "$NGINX_SHA256"
-Set-PsVar PCRE2_SHA256 "$PCRE2_SHA256"
-Set-PsVar ZLIB_SHA256 "$ZLIB_SHA256"
-Set-PsVar HEADERS_MORE_SHA256 "$HEADERS_MORE_SHA256"
-Set-PsVar ZSTD_MODULE_SHA256 "$ZSTD_MODULE_SHA256"
-Set-PsVar ACME_MODULE_SHA256 "$ACME_MODULE_SHA256"
-
 Write-Log SUCCESS "Updated checksums in:"
 echo "  - nginx/nginx_installer.sh"
-echo "  - nginx/nginx_installer.ps1"

@@ -10,8 +10,17 @@ set -euo pipefail
 #   and ACME support on Linux.
 #
 # Usage:
-#   ./nginx_installer.sh install    - Build and install NGINX
-#   ./nginx_installer.sh remove     - Uninstall NGINX
+#   ./nginx_installer.sh install [options]   - Build and install NGINX
+#   ./nginx_installer.sh remove              - Uninstall NGINX
+#
+# Options:
+#   --skip-acme            Do not build/install the ACME module
+#   --skip-zstd            Do not build/install the zstd module
+#   --skip-headers-more    Do not build/install the headers-more module
+#   --skip-modules=a,b,c   Comma-separated list of: acme, zstd, headers-more
+#
+#   A module that fails to download or build is skipped automatically
+#   (with a warning) instead of aborting the whole install.
 #
 # ============================================================================
 
@@ -127,6 +136,22 @@ ACME_MODULE_VERSION="0.4.1"
 ACME_MODULE_SHA256="b4f99f971bd0bebc89b2037f3afeaa3281004fe434de558df87d69cab2be1f22"
 
 # ============================================================================
+# Optional Module Configuration
+# ============================================================================
+# zstd, headers-more and ACME are optional dynamic modules. Any of them can
+# be disabled up front with a --skip-* flag, and any of them is disabled
+# automatically (with a warning) if its download or build fails, instead of
+# aborting the whole install. Env vars let CI/automation set the same thing.
+
+SKIP_ACME="${NGINX_SKIP_ACME:-false}"
+SKIP_ZSTD="${NGINX_SKIP_ZSTD:-false}"
+SKIP_HEADERS_MORE="${NGINX_SKIP_HEADERS_MORE:-false}"
+
+# Set once the ACME module has actually been built; used to decide whether
+# to install/require it later, since it can be skipped mid-build on failure.
+ACME_MODULE_BUILT=false
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -169,19 +194,54 @@ Get-File() {
     local url=$1
     local file=$2
     local sha=$3
-    
+
     if [[ -f "$file" ]]; then
         Test-Hash "$file" "$sha"
         return 0
     fi
-    
+
     Write-Log INFO "Downloading $(basename "$file")..."
     curl -fsSL "$url" -o "$file" || Stop-Script "Download failed: $url"
     Test-Hash "$file" "$sha"
 }
 
+# Like Get-File, but for optional modules: returns 1 instead of aborting the
+# script when the download fails or the checksum doesn't match.
+Get-OptionalFile() {
+    local url=$1
+    local file=$2
+    local sha=$3
+    local label=$4
+    local actual
+
+    if [[ -f "$file" ]]; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+        if [[ "$actual" == "$sha" ]]; then
+            return 0
+        fi
+        Write-Log WARN "Checksum mismatch for existing $label archive, re-downloading"
+        rm -f "$file"
+    fi
+
+    Write-Log INFO "Downloading $label..."
+    if ! curl -fsSL "$url" -o "$file"; then
+        Write-Log WARN "Download failed for $label module: $url"
+        return 1
+    fi
+
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [[ "$actual" != "$sha" ]]; then
+        Write-Log WARN "Checksum verification failed for $label module, skipping it"
+        rm -f "$file"
+        return 1
+    fi
+    return 0
+}
+
 # Downloads rustup-init, verifies its published SHA256, then installs the
 # Rust toolchain. Replaces the old unverified `curl | sh` pattern.
+# Returns 1 instead of aborting the script on failure, so callers can skip
+# whichever module needed it (currently: ACME).
 Install-Rustup() {
     Write-Log INFO "Installing Rust toolchain via rustup-init"
     local rustup_arch
@@ -190,19 +250,36 @@ Install-Rustup() {
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
-    curl -fsSL "$rustup_url" -o "$tmp_dir/rustup-init" || Stop-Script "Failed to download rustup-init"
-    curl -fsSL "${rustup_url}.sha256" -o "$tmp_dir/rustup-init.sha256" || Stop-Script "Failed to download rustup-init checksum"
+    if ! curl -fsSL "$rustup_url" -o "$tmp_dir/rustup-init"; then
+        Write-Log WARN "Failed to download rustup-init"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! curl -fsSL "${rustup_url}.sha256" -o "$tmp_dir/rustup-init.sha256"; then
+        Write-Log WARN "Failed to download rustup-init checksum"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
 
     local expected actual
     expected=$(cut -d' ' -f1 "$tmp_dir/rustup-init.sha256")
     actual=$(sha256sum "$tmp_dir/rustup-init" | awk '{print $1}')
-    [[ -n "$expected" && "$actual" == "$expected" ]] || Stop-Script "rustup-init checksum verification failed"
+    if [[ -z "$expected" || "$actual" != "$expected" ]]; then
+        Write-Log WARN "rustup-init checksum verification failed"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
 
     chmod +x "$tmp_dir/rustup-init"
-    "$tmp_dir/rustup-init" -y >/dev/null 2>&1 || Stop-Script "rustup installation failed"
+    if ! "$tmp_dir/rustup-init" -y >/dev/null 2>&1; then
+        Write-Log WARN "rustup installation failed"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
     rm -rf "$tmp_dir"
     # shellcheck disable=SC1091
     source "$HOME/.cargo/env"
+    return 0
 }
 
 # ============================================================================
@@ -237,12 +314,15 @@ Install-Dependencies() {
             ;;
     esac
     
-    # Verify cargo availability
-    if ! command -v cargo >/dev/null 2>&1; then
+    # Verify cargo availability (only needed to build the ACME module)
+    if [[ $SKIP_ACME != true ]] && ! command -v cargo >/dev/null 2>&1; then
         Write-Log WARN "Cargo not found. Installing rustup..."
-        Install-Rustup
+        if ! Install-Rustup; then
+            Write-Log WARN "Rust toolchain unavailable, disabling ACME module for this run"
+            SKIP_ACME=true
+        fi
     fi
-    
+
     Write-Log INFO "Dependencies installed"
 }
 
@@ -288,22 +368,32 @@ Get-Sources() {
     Get-File "$NGINX_URL" "nginx.tgz" "$NGINX_SHA256"
     Get-File "$PCRE2_URL" "pcre2.tgz" "$PCRE2_SHA256"
     Get-File "$ZLIB_URL" "zlib.tgz" "$ZLIB_SHA256"
-    Get-File "$HEADERS_MORE_URL" "headers.tgz" "$HEADERS_MORE_SHA256"
-    Get-File "$ZSTD_MODULE_URL" "zstd.tgz" "$ZSTD_MODULE_SHA256"
-    Get-File "$ACME_MODULE_URL" "acme.tgz" "$ACME_MODULE_SHA256"
-    
+
+    if [[ $SKIP_HEADERS_MORE != true ]] && ! Get-OptionalFile "$HEADERS_MORE_URL" "headers.tgz" "$HEADERS_MORE_SHA256" "headers-more"; then
+        Write-Log WARN "Disabling headers-more module for this run"
+        SKIP_HEADERS_MORE=true
+    fi
+    if [[ $SKIP_ZSTD != true ]] && ! Get-OptionalFile "$ZSTD_MODULE_URL" "zstd.tgz" "$ZSTD_MODULE_SHA256" "zstd"; then
+        Write-Log WARN "Disabling zstd module for this run"
+        SKIP_ZSTD=true
+    fi
+    if [[ $SKIP_ACME != true ]] && ! Get-OptionalFile "$ACME_MODULE_URL" "acme.tgz" "$ACME_MODULE_SHA256" "acme"; then
+        Write-Log WARN "Disabling ACME module for this run"
+        SKIP_ACME=true
+    fi
+
     Write-Log INFO "Extracting archives"
-    
+
     # Clean previous extractions
     rm -rf nginx openssl pcre2 zlib headers-more zstd-module nginx-acme 2>/dev/null || true
-    
+
     tar xzf nginx.tgz && mv "nginx-${NGINX_VERSION}" nginx
     tar xzf pcre2.tgz && mv "pcre2-${PCRE2_VERSION}" pcre2
     tar xzf zlib.tgz && mv "zlib-${ZLIB_VERSION}" zlib
-    tar xzf headers.tgz && mv "headers-more-nginx-module-${HEADERS_MORE_VERSION}" headers-more
-    tar xzf zstd.tgz && mv "zstd-nginx-module-${ZSTD_MODULE_VERSION}" zstd-module
-    tar xzf acme.tgz && mv "nginx-acme-${ACME_MODULE_VERSION}" nginx-acme
-    
+    [[ $SKIP_HEADERS_MORE == true ]] || { tar xzf headers.tgz && mv "headers-more-nginx-module-${HEADERS_MORE_VERSION}" headers-more; }
+    [[ $SKIP_ZSTD == true ]] || { tar xzf zstd.tgz && mv "zstd-nginx-module-${ZSTD_MODULE_VERSION}" zstd-module; }
+    [[ $SKIP_ACME == true ]] || { tar xzf acme.tgz && mv "nginx-acme-${ACME_MODULE_VERSION}" nginx-acme; }
+
     Write-Log INFO "Sources ready"
 }
 
@@ -335,105 +425,131 @@ Build-Nginx() {
     
     export TMPDIR="$BUILD_DIR"
     export CC=gcc
-    
-    # Verify libzstd availability
-    if command -v ldconfig >/dev/null 2>&1; then
-        if ! ldconfig -p 2>/dev/null | grep -q "libzstd.so"; then
-            Stop-Script "Shared libzstd not found. Install libzstd-dev/devel"
+
+    if [[ $SKIP_ZSTD != true ]]; then
+        # Verify libzstd availability
+        if command -v ldconfig >/dev/null 2>&1; then
+            if ! ldconfig -p 2>/dev/null | grep -q "libzstd.so"; then
+                Write-Log WARN "Shared libzstd not found. Install libzstd-dev/devel; disabling zstd module for this run"
+                SKIP_ZSTD=true
+            fi
+        elif [[ ! -f /usr/lib/libzstd.so && ! -f /usr/lib/libzstd.so.1 &&
+                ! -f /usr/lib64/libzstd.so && ! -f /usr/lib64/libzstd.so.1 &&
+                ! -f /usr/local/lib/libzstd.so ]]; then
+            Write-Log WARN "Shared libzstd not found. Install libzstd-dev/devel; disabling zstd module for this run"
+            SKIP_ZSTD=true
         fi
-    elif [[ ! -f /usr/lib/libzstd.so && ! -f /usr/lib/libzstd.so.1 &&
-            ! -f /usr/lib64/libzstd.so && ! -f /usr/lib64/libzstd.so.1 &&
-            ! -f /usr/local/lib/libzstd.so ]]; then
-        Stop-Script "Shared libzstd not found. Install libzstd-dev/devel"
     fi
-    
-    export LDFLAGS="-lzstd"
-    
+    [[ $SKIP_ZSTD == true ]] || export LDFLAGS="-lzstd"
+
+    local configure_args=(
+        --with-compat
+        --prefix="${NGINX_PREFIX}"
+        --sbin-path=/usr/sbin/nginx
+        --conf-path=/etc/nginx/nginx.conf
+        --http-log-path=/var/log/nginx/access.log
+        --error-log-path=/var/log/nginx/error.log
+        --pid-path=/run/nginx.pid
+        --lock-path=/run/lock/nginx.lock
+        --http-client-body-temp-path=/var/lib/nginx/tmp/client_body
+        --http-proxy-temp-path=/var/lib/nginx/tmp/proxy
+        --http-fastcgi-temp-path=/var/lib/nginx/tmp/fastcgi
+        --http-uwsgi-temp-path=/var/lib/nginx/tmp/uwsgi
+        --http-scgi-temp-path=/var/lib/nginx/tmp/scgi
+        --with-pcre="$BUILD_DIR/pcre2"
+        --with-zlib="$BUILD_DIR/zlib"
+        --with-pcre-jit
+        --with-http_ssl_module
+        --with-http_v2_module
+        --with-http_v3_module
+        --with-http_gzip_static_module
+        --with-http_stub_status_module
+        --with-http_realip_module
+        --with-http_sub_module
+        --with-http_secure_link_module
+        --with-stream
+        --with-stream_ssl_module
+        --with-stream_ssl_preread_module
+        --with-stream_realip_module
+        --with-file-aio
+        --with-threads
+        --modules-path="${NGINX_MODULES_PATH}"
+    )
+    [[ $SKIP_HEADERS_MORE == true ]] || configure_args+=(--add-dynamic-module="$BUILD_DIR/headers-more")
+    [[ $SKIP_ZSTD == true ]] || configure_args+=(--add-dynamic-module="$BUILD_DIR/zstd-module")
+
     local output
-    if ! output=$(./configure \
-        --with-compat \
-        --prefix="${NGINX_PREFIX}" \
-        --sbin-path=/usr/sbin/nginx \
-        --conf-path=/etc/nginx/nginx.conf \
-        --http-log-path=/var/log/nginx/access.log \
-        --error-log-path=/var/log/nginx/error.log \
-        --pid-path=/run/nginx.pid \
-        --lock-path=/run/lock/nginx.lock \
-        --http-client-body-temp-path=/var/lib/nginx/tmp/client_body \
-        --http-proxy-temp-path=/var/lib/nginx/tmp/proxy \
-        --http-fastcgi-temp-path=/var/lib/nginx/tmp/fastcgi \
-        --http-uwsgi-temp-path=/var/lib/nginx/tmp/uwsgi \
-        --http-scgi-temp-path=/var/lib/nginx/tmp/scgi \
-        --with-pcre="$BUILD_DIR/pcre2" \
-        --with-zlib="$BUILD_DIR/zlib" \
-        --with-pcre-jit \
-        --with-http_ssl_module \
-        --with-http_v2_module \
-        --with-http_v3_module \
-        --with-http_gzip_static_module \
-        --with-http_stub_status_module \
-        --with-http_realip_module \
-        --with-http_sub_module \
-        --with-http_secure_link_module \
-        --with-stream \
-        --with-stream_ssl_module \
-        --with-stream_ssl_preread_module \
-        --with-stream_realip_module \
-        --with-file-aio \
-        --with-threads \
-        --modules-path="${NGINX_MODULES_PATH}" \
-        --add-dynamic-module="$BUILD_DIR/headers-more" \
-        --add-dynamic-module="$BUILD_DIR/zstd-module" \
-        2>&1); then
+    if ! output=$(./configure "${configure_args[@]}" 2>&1); then
         printf '%s\n' "$output" >> "$LOG_FILE"
         Write-Log ERROR "Configure output: $(echo "$output" | tail -20)"
         Stop-Script "Configure failed"
     fi
-    
+
     # Patch Makefile for shared libzstd
-    if [[ -f "objs/Makefile" ]]; then
+    if [[ $SKIP_ZSTD != true && -f "objs/Makefile" ]]; then
         Write-Log INFO "Patching nginx Makefile for shared libzstd"
         sed -i 's/-l:libzstd\.a/-lzstd/g' "objs/Makefile"
     fi
-    
+
     if ! output=$(make -j"$(nproc)" 2>&1); then
         printf '%s\n' "$output" >> "$LOG_FILE"
         Write-Log ERROR "Make output: $(echo "$output" | tail -20)"
         Stop-Script "Build failed"
     fi
-    
-    # Build ACME Module
+
+    # Build ACME Module (optional — skipped automatically on failure)
+    if [[ $SKIP_ACME == true ]]; then
+        Write-Log INFO "Skipping ACME module"
+    elif Build-AcmeModule; then
+        ACME_MODULE_BUILT=true
+    else
+        Write-Log WARN "Continuing without the ACME module"
+        SKIP_ACME=true
+    fi
+
+    Write-Log INFO "Build complete"
+}
+
+# Builds the ACME dynamic module. Returns 1 on any failure instead of
+# aborting the script, so the caller can skip the module and carry on.
+Build-AcmeModule() {
     Write-Log INFO "Building ACME module ${ACME_MODULE_VERSION}"
-    cd "$BUILD_DIR/nginx-acme" || Stop-Script "ACME source missing"
-    
+    cd "$BUILD_DIR/nginx-acme" || { Write-Log WARN "ACME source missing"; return 1; }
+
     export NGINX_BUILD_DIR="$BUILD_DIR/nginx/objs"
     export NGX_ACME_STATE_PREFIX="/var/cache/nginx"
-    
+
     if [[ -f "$HOME/.cargo/env" ]]; then
+        # shellcheck disable=SC1091
         source "$HOME/.cargo/env"
     fi
-    
+
     # Verify Rust toolchain
     if ! command -v rustc >/dev/null 2>&1; then
         Write-Log WARN "rustc not found, installing rustup"
-        Install-Rustup
+        Install-Rustup || { Write-Log WARN "Rust toolchain unavailable"; return 1; }
     fi
-    
+
     local cargo_output
     if ! cargo_output=$(cargo build --release 2>&1); then
         printf '%s\n' "$cargo_output" >> "$LOG_FILE"
-        Write-Log ERROR "ACME build failed: $(echo "$cargo_output" | tail -20)"
-        Stop-Script "ACME module build failed"
+        Write-Log WARN "ACME build failed: $(echo "$cargo_output" | tail -20)"
+        return 1
     fi
-    
+
     mkdir -p "$BUILD_DIR/nginx-acme/objs"
     local acme_so="target/release/libnginx_acme.so"
-    [[ -f "$acme_so" ]] || Stop-Script "ACME module not built: $acme_so missing (cargo build may have failed)"
-    cp "$acme_so" "$BUILD_DIR/nginx-acme/objs/ngx_http_acme_module.so" \
-        || Stop-Script "Failed to stage ACME module: cp failed (check disk space or permissions)"
-    
+    if [[ ! -f "$acme_so" ]]; then
+        Write-Log WARN "ACME module not built: $acme_so missing (cargo build may have failed)"
+        return 1
+    fi
+    if ! cp "$acme_so" "$BUILD_DIR/nginx-acme/objs/ngx_http_acme_module.so"; then
+        Write-Log WARN "Failed to stage ACME module: cp failed (check disk space or permissions)"
+        return 1
+    fi
+
     Write-Log INFO "ACME module built successfully"
-    Write-Log INFO "Build complete"
+    return 0
 }
 
 # ============================================================================
@@ -503,12 +619,27 @@ New-SelfSignedCertificate() {
 
 New-NginxConfig() {
     Write-Log INFO "Creating nginx configuration"
-    
-    cat > /etc/nginx/nginx.conf <<'EOF'
+
+    : > /etc/nginx/nginx.conf
+
+    if [[ $SKIP_ZSTD != true ]]; then
+        cat >> /etc/nginx/nginx.conf <<'EOF'
 load_module /etc/nginx/modules/ngx_http_zstd_filter_module.so;
 load_module /etc/nginx/modules/ngx_http_zstd_static_module.so;
+EOF
+    fi
+    if [[ $SKIP_HEADERS_MORE != true ]]; then
+        cat >> /etc/nginx/nginx.conf <<'EOF'
 load_module /etc/nginx/modules/ngx_http_headers_more_filter_module.so;
+EOF
+    fi
+    if [[ $ACME_MODULE_BUILT == true ]]; then
+        cat >> /etc/nginx/nginx.conf <<'EOF'
 load_module /etc/nginx/modules/ngx_http_acme_module.so;
+EOF
+    fi
+
+    cat >> /etc/nginx/nginx.conf <<'EOF'
 
 user nginx;
 worker_processes auto;
@@ -524,7 +655,15 @@ http {
     default_type  application/octet-stream;
 
     server_tokens off;
+EOF
+
+    if [[ $SKIP_HEADERS_MORE != true ]]; then
+        cat >> /etc/nginx/nginx.conf <<'EOF'
     more_set_headers 'Server: nginx';
+EOF
+    fi
+
+    cat >> /etc/nginx/nginx.conf <<'EOF'
 
     log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
                       '$status $body_bytes_sent "$http_referer" '
@@ -546,12 +685,20 @@ http {
     gzip_comp_level 6;
     gzip_min_length 1024;
     gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml;
+EOF
+
+    if [[ $SKIP_ZSTD != true ]]; then
+        cat >> /etc/nginx/nginx.conf <<'EOF'
 
     # Zstd compression
     zstd on;
     zstd_comp_level 6;
     zstd_min_length 1024;
     zstd_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml;
+EOF
+    fi
+
+    cat >> /etc/nginx/nginx.conf <<'EOF'
 
     # SSL/TLS configuration
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -664,20 +811,29 @@ Install-Nginx() {
     done < <(compgen -G 'objs/*.so' || true)
 
     if [[ ${#nginx_module_files[@]} -eq 0 ]]; then
-        Stop-Script "No NGINX dynamic modules found in $BUILD_DIR/nginx/objs"
+        if [[ $SKIP_ZSTD == true && $SKIP_HEADERS_MORE == true ]]; then
+            Write-Log INFO "No optional dynamic modules to install (zstd and headers-more both skipped)"
+        else
+            Stop-Script "No NGINX dynamic modules found in $BUILD_DIR/nginx/objs"
+        fi
+    else
+        cp "${nginx_module_files[@]}" "${NGINX_MODULES_PATH}/" || Stop-Script "Failed to copy NGINX modules"
     fi
-    cp "${nginx_module_files[@]}" "${NGINX_MODULES_PATH}/" || Stop-Script "Failed to copy NGINX modules"
 
-    local acme_module="$BUILD_DIR/nginx-acme/objs/ngx_http_acme_module.so"
-    [[ -f "$acme_module" ]] || Stop-Script "ACME module not found: $acme_module"
-    cp "$acme_module" "${NGINX_MODULES_PATH}/" || Stop-Script "Failed to copy ACME module"
+    if [[ $ACME_MODULE_BUILT == true ]]; then
+        local acme_module="$BUILD_DIR/nginx-acme/objs/ngx_http_acme_module.so"
+        if [[ -f "$acme_module" ]]; then
+            cp "$acme_module" "${NGINX_MODULES_PATH}/" || Stop-Script "Failed to copy ACME module"
+        else
+            Write-Log WARN "ACME module artifact missing, skipping"
+            ACME_MODULE_BUILT=false
+        fi
+    fi
 
-    local required_modules=(
-        ngx_http_zstd_filter_module.so
-        ngx_http_zstd_static_module.so
-        ngx_http_headers_more_filter_module.so
-        ngx_http_acme_module.so
-    )
+    local required_modules=()
+    [[ $SKIP_ZSTD == true ]] || required_modules+=(ngx_http_zstd_filter_module.so ngx_http_zstd_static_module.so)
+    [[ $SKIP_HEADERS_MORE == true ]] || required_modules+=(ngx_http_headers_more_filter_module.so)
+    [[ $ACME_MODULE_BUILT == true ]] && required_modules+=(ngx_http_acme_module.so)
     local module
     for module in "${required_modules[@]}"; do
         [[ -f "${NGINX_MODULES_PATH}/${module}" ]] || Stop-Script "Required module missing after install: ${module}"
@@ -752,7 +908,11 @@ Test-NginxInstallation() {
     }
     
     if [[ ! -f /etc/nginx/modules/ngx_http_acme_module.so ]]; then
-        Write-Log WARN "ACME module not found"
+        if [[ $ACME_MODULE_BUILT == true ]]; then
+            Write-Log WARN "ACME module not found"
+        else
+            Write-Log INFO "ACME module skipped"
+        fi
     else
         Write-Log INFO "ACME module present"
     fi
@@ -844,9 +1004,66 @@ Test-RunningWebServers() {
 # Main Entry Point
 # ============================================================================
 
+Show-Usage() {
+    cat <<'EOF'
+Usage: nginx_installer.sh {install|remove} [options]
+
+Options:
+  --skip-acme            Do not build/install the ACME module
+  --skip-zstd            Do not build/install the zstd module
+  --skip-headers-more    Do not build/install the headers-more module
+  --skip-modules=a,b,c   Comma-separated list of: acme, zstd, headers-more
+  -h, --help             Show this help
+
+A module that fails to download or build is skipped automatically (with a
+warning) instead of aborting the whole install.
+EOF
+}
+
+COMMAND="install"
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    COMMAND="$1"
+    shift
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-acme)
+            SKIP_ACME=true
+            ;;
+        --skip-zstd)
+            SKIP_ZSTD=true
+            ;;
+        --skip-headers-more)
+            SKIP_HEADERS_MORE=true
+            ;;
+        --skip-modules=*)
+            IFS=',' read -ra _skip_list <<< "${1#*=}"
+            for _module in "${_skip_list[@]}"; do
+                case "$_module" in
+                    acme)          SKIP_ACME=true ;;
+                    zstd)          SKIP_ZSTD=true ;;
+                    headers-more)  SKIP_HEADERS_MORE=true ;;
+                    *) Stop-Script "Unknown module: $_module (expected acme, zstd, headers-more)" ;;
+                esac
+            done
+            ;;
+        -h|--help)
+            Show-Usage
+            exit 0
+            ;;
+        *)
+            Write-Log ERROR "Unknown argument: $1"
+            Show-Usage
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-case "${1:-install}" in
+case "$COMMAND" in
     install)
         Update-SystemPackages
         Test-RunningWebServers
@@ -863,7 +1080,7 @@ case "${1:-install}" in
         echo "Removal log: $LOG_FILE"
         ;;
     *)
-        echo "Usage: $0 {install|remove}"
+        Show-Usage
         exit 1
         ;;
 esac
