@@ -26,9 +26,10 @@ pwsh ./<tool>_installer.ps1
 | `ansible/` | `ansible_installer.sh` | Linux | Installs Ansible via pip in a venv |
 | `docker/` | `docker_installer.sh` | Linux | Official Docker repositories |
 | `kubernetes/` | `kubernetes_installer.sh` | Linux | kubectl + optional Minikube |
-| `nginx/` | `nginx_installer.sh`, `nginx_installer.ps1` | Linux | Custom build: OpenSSL 3.x, HTTP/2, HTTP/3, zstd, headers-more, ACME |
+| `nginx/` | `nginx_installer.sh` | Linux | Custom build: OpenSSL 3.x, HTTP/2, HTTP/3, zstd, headers-more, ACME |
 | `openssh/` | `openssh_installer.sh` | Linux | Hardened config, Ed25519-only, post-quantum KEX (ML-KEM) |
 | `podman/` | `podman_installer.sh` | Linux | Distribution repositories |
+| `system/` | `planned_shutdown.sh` | Linux | Schedule/cancel/check a planned shutdown or reboot |
 | `terraform/` | `terraform_installer.sh` | Linux | HashiCorp repositories |
 | `TLS-tools/` | `TLS-checker.ps1` | Cross-platform | Tests TLS versions, HTTP versions, QUIC, HSTS, compression |
 | `TLS-tools/` | `testssl.sh` (submodule) | Linux | Comprehensive TLS/SSL scanner by Dirk Wetter — pinned at a specific version |
@@ -38,6 +39,7 @@ pwsh ./<tool>_installer.ps1
 | `windows/` | `Install-VagrantVMware.ps1` | Windows | Installs Vagrant + VMware Workstation |
 | `windows/` | `Install-DellCommandUpdate.ps1` | Windows | Installs Dell Command Update via winget |
 | `windows/` | `Install-HPImageAssistant.ps1` | Windows | Installs HP Image Assistant via winget |
+| `windows/` | `Set-PlannedShutdown.ps1` | Windows | Schedule/cancel/check a planned shutdown or reboot |
 
 ## Linux distro support
 

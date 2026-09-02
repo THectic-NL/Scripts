@@ -7,7 +7,23 @@ sudo ./nginx_installer.sh install
 sudo ./nginx_installer.sh remove
 ```
 
-PowerShell variant also available: `nginx_installer.ps1`
+## Optional modules
+
+zstd, headers-more and ACME are optional dynamic modules. Skip any of them
+up front, or let the installer skip them automatically (with a warning)
+when a download or build fails, instead of aborting the whole install:
+
+```bash
+sudo ./nginx_installer.sh install --skip-acme
+sudo ./nginx_installer.sh install --skip-modules=acme,zstd,headers-more
+```
+
+| Flag | Skips |
+|------|-------|
+| `--skip-acme` | ACME module |
+| `--skip-zstd` | zstd compression module |
+| `--skip-headers-more` | headers-more module |
+| `--skip-modules=a,b,c` | Any combination of `acme`, `zstd`, `headers-more` |
 
 ## Installed paths
 
