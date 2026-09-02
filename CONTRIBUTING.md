@@ -102,11 +102,11 @@ Renovate normally handles version bumps. For manual updates:
 ### Example: Updating NGINX manually
 
 ```bash
-# 1. Edit nginx/nginx_installer.sh AND nginx/nginx_installer.ps1
-# Update these lines (same format!):
+# 1. Edit nginx/nginx_installer.sh
+# Update this line:
 NGINX_VERSION="1.31.1"
 
-# 2. Recalculate all checksums for both installers
+# 2. Recalculate the checksum
 .github/scripts/update-nginx-checksums.sh --apply
 
 # 3. Test the script

@@ -9,7 +9,6 @@ on:
     branches: [main]
     paths:
       - 'nginx/nginx_installer.sh'
-      - 'nginx/nginx_installer.ps1'
 
 permissions:
   contents: write
@@ -35,7 +34,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add nginx/nginx_installer.sh nginx/nginx_installer.ps1
+          git add nginx/nginx_installer.sh
           if git diff --staged --quiet; then
             echo "Checksums are already up to date, nothing to commit."
           else
