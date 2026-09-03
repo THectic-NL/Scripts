@@ -1,14 +1,34 @@
-# Scripts
+---
+title: ""
+toc: false
+---
 
-Installer scripts for tools and software used regularly. Tailored to THectic's preferences, but easy to adapt.
+<div class="hx-mt-6 hx-mb-6">
+{{< hextra/hero-headline >}}
+  Scripts
+{{< /hextra/hero-headline >}}
+</div>
 
-Also browsable as a site: [scripts.thectic.nl](https://scripts.thectic.nl) (`src/`).
+<div class="hx-mb-12">
+{{< hextra/hero-subtitle >}}
+  Installer scripts for tools THectic uses regularly — Bash and PowerShell, easy to adapt
+{{< /hextra/hero-subtitle >}}
+</div>
+
+<div class="hx-mb-10" style="margin-top: 2.5rem !important;">
+{{< hextra/hero-badge link="https://github.com/Thectic-NL/Scripts" >}}
+  <span>View on GitHub</span>
+  {{< icon name="github" attributes="height=20" >}}
+{{< /hextra/hero-badge >}}
+</div>
+
+<div class="hx-mt-6"></div>
 
 ## Usage
 
 ```bash
 git clone --recurse-submodules https://github.com/Thectic-NL/Scripts.git
-cd scripts
+cd Scripts
 ```
 
 Bash:
@@ -62,24 +82,6 @@ All Linux installers target the same three package-manager families:
 
 openSUSE (zypper) is not supported.
 
-## Conventions
-
-- All bash scripts are standalone single-file downloads. They share the same
-  set of helper functions (`Write-Log`, `Stop-Script`, `Get-PkgMgr`, ...),
-  copied into each script — keep them aligned when changing one.
-- Function names follow the PowerShell Verb-Noun convention everywhere — also
-  in bash (`Write-Log`, `Get-PkgMgr`, `Install-Podman`). Hyphenated function
-  names are bash-only syntax, so scripts must keep the bash shebang.
-- Every script starts with `#!/usr/bin/env bash` and `set -euo pipefail`.
-
-## Automation
-
-Dependency checks run weekly via GitHub Actions. When updates are detected, a PR is created automatically.
-
-Script validation runs on every push: ShellCheck for Bash, PSScriptAnalyzer for PowerShell.
-
-## Notes
-
-- `testssl.sh` is included as a Git submodule. Run `git submodule update --init` if it's missing after cloning.
-- NGINX updates require manual checksum verification: `.github/scripts/update-nginx-checksums.sh`
-- Some scripts were partially written with GitHub Copilot assistance.
+{{< callout type="info" >}}
+Dependency checks run weekly; script validation (ShellCheck for Bash, PSScriptAnalyzer for PowerShell) runs on every push. See the [GitHub repository](https://github.com/Thectic-NL/Scripts) for the full source and conventions.
+{{< /callout >}}
