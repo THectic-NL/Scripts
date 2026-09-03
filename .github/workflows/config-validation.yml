@@ -1,0 +1,88 @@
+# Copyright (C) 2026 Sten Tijhuis
+# SPDX-License-Identifier: MIT
+name: Config validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'renovate.json'
+      - '.github/renovate.json'
+      - '.github/dependabot.yml'
+      - '.github/dependabot.yaml'
+      - '.github/scripts/check-renovate-patterns.py'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'renovate.json'
+      - '.github/renovate.json'
+      - '.github/dependabot.yml'
+      - '.github/dependabot.yaml'
+      - '.github/scripts/check-renovate-patterns.py'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  bot-configs:
+    name: Renovate and Dependabot config
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 'lts/*'
+
+      - name: Validate Renovate config
+        env:
+          NPM_CONFIG_LOGLEVEL: error
+        run: npx --yes --package renovate -- renovate-config-validator --strict
+
+      - name: Check Renovate file patterns
+        run: python3 .github/scripts/check-renovate-patterns.py renovate.json .github/renovate.json
+
+      - name: Validate Dependabot config
+        env:
+          # renovate: datasource=pypi depName=check-jsonschema
+          CHECK_JSONSCHEMA_VERSION: "0.38.0"
+        run: |
+          config=""
+          for candidate in .github/dependabot.yml .github/dependabot.yaml; do
+            if [ -f "$candidate" ]; then
+              config="$candidate"
+              break
+            fi
+          done
+          if [ -z "$config" ]; then
+            echo "No dependabot.yml in this repository; nothing to validate."
+            exit 0
+          fi
+          pipx install "check-jsonschema==${CHECK_JSONSCHEMA_VERSION}"
+          check-jsonschema --builtin-schema vendor.dependabot "$config"
+
+      - name: Install actionlint
+        if: ${{ !cancelled() }}
+        env:
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          curl -sSL --fail-with-body -o actionlint.tar.gz \
+            --retry 5 --retry-delay 3 --retry-all-errors \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+
+      - name: Run actionlint
+        if: ${{ !cancelled() }}
+        run: actionlint -color

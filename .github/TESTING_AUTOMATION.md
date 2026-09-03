@@ -19,7 +19,7 @@ Issue #48 is a perfect test case for the Ansible dependency updates:
 
 ### Method 1: Manually Trigger via GitHub Actions UI
 
-1. Go to the [Actions tab](https://github.com/Stensel8/Scripts/actions)
+1. Go to the [Actions tab](https://github.com/Thectic-NL/Scripts/actions)
 2. Select "Auto-Update Dependencies" workflow
 3. Click "Run workflow"
 4. Enter issue number: `48`
@@ -29,7 +29,7 @@ Issue #48 is a perfect test case for the Ansible dependency updates:
 
 The workflow automatically runs when dependency issues are opened or edited:
 
-1. Go to [Issue #48](https://github.com/Stensel8/Scripts/issues/48)
+1. Go to [Issue #48](https://github.com/Thectic-NL/Scripts/issues/48)
 2. Click "Edit" on the issue
 3. Add a space or make any minor edit to the description
 4. Save the changes

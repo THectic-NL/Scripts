@@ -1,0 +1,12 @@
+self-hosted-runner: {}
+
+paths:
+  .github/workflows/validate-scripts.yml:
+    ignore:
+      # validate-scripts.yml already runs `shellcheck -S warning` itself
+      # (see the "Run ShellCheck" step) as a deliberate choice to treat
+      # info/style findings as non-blocking. actionlint's own shellcheck
+      # integration doesn't pick up a repo .shellcheckrc, so without this
+      # it re-litigates that choice at error level for the same scripts.
+      - 'SC2086:info:'
+      - 'SC2129:style:'
