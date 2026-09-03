@@ -169,6 +169,14 @@ Validate with `npx --yes --package renovate -- renovate-config-validator renovat
 - Review any warnings from ShellCheck or PSScriptAnalyzer
 - Ensure no security scan warnings
 
+## Site (`src/`)
+
+`scripts.thectic.nl` is a small bilingual (EN + NL) Hugo site under `src/`,
+built and deployed to Bunny.net from `.github/workflows/deploy-bunny.yml` on
+every push to `main` that touches `src/`. When updating it, edit both
+`src/content/_index.md` (EN) and `src/content/_index.nl.md` (NL) and keep
+them in sync. Test locally with `cd src && hugo server`.
+
 ## Common Tasks
 
 ### Adding a New Installer Script
