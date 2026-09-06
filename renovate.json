@@ -256,7 +256,7 @@
       "customType": "regex",
       "depNameTemplate": "kubernetes/kubernetes",
       "managerFilePatterns": [
-        "/^kubernetes/kubernetes_installer\\.sh$/"
+        "/^kubernetes/k8s_installer\\.sh$/"
       ]
     },
     {
@@ -268,7 +268,7 @@
       "customType": "regex",
       "depNameTemplate": "kubernetes/minikube",
       "managerFilePatterns": [
-        "/^kubernetes/kubernetes_installer\\.sh$/"
+        "/^kubernetes/k8s_installer\\.sh$/"
       ]
     },
     {

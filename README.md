@@ -27,7 +27,7 @@ pwsh ./<tool>_installer.ps1
 |-----------|---------|----------|-------|
 | `ansible/` | `ansible_installer.sh` | Linux | Installs Ansible via pip in a venv |
 | `docker/` | `docker_installer.sh` | Linux | Official Docker repositories |
-| `kubernetes/` | `kubernetes_installer.sh` | Linux | kubectl + optional Minikube |
+| `kubernetes/` | `k8s_installer.sh` | Linux | kubectl + optional Minikube |
 | `kubernetes/` | `k3s_installer.sh` | Linux | K3s cluster node: `--control-plane` / `--worker` |
 | `nginx/` | `nginx_installer.sh` | Linux | Custom build: OpenSSL 3.x, HTTP/2, HTTP/3, zstd, headers-more, ACME |
 | `openssh/` | `openssh_installer.sh` | Linux | Hardened config, Ed25519-only, post-quantum KEX (ML-KEM) |
@@ -52,7 +52,7 @@ All Linux installers target the same three package-manager families:
 |--------|:---:|:---:|:---:|
 | `ansible_installer.sh` | ✅ | ✅ | ✅ |
 | `docker_installer.sh` | ✅ | ✅ | ✅ ¹ |
-| `kubernetes_installer.sh` | ✅ | ✅ | ✅ ² |
+| `k8s_installer.sh` | ✅ | ✅ | ✅ ² |
 | `k3s_installer.sh` | ✅ | ✅ | ✅ ³ |
 | `nginx_installer.sh` | ✅ | ✅ | ✅ |
 | `openssh_installer.sh` | ✅ | ✅ | ✅ |

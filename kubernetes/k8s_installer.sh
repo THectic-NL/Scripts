@@ -94,7 +94,7 @@ Invoke-Cmd() {
 }
 
 # === Settings ===
-LOG_FILE="/tmp/kubernetes_install_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="/tmp/k8s_install_$(date +%Y%m%d_%H%M%S).log"
 
 K8S_VERSION="${K8S_VERSION:-v1.37.0}"
 MINIKUBE_VERSION="${MINIKUBE_VERSION:-v1.39.0}"
