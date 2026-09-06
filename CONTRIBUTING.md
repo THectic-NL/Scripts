@@ -187,8 +187,7 @@ them in sync. Test locally with `cd src && hugo server`.
 4. Support apt, dnf and pacman
 5. Include a version configuration section at the top (if versions are pinned)
 6. Test thoroughly on clean systems
-7. Update README.md (script table + distro matrix)
-8. Add a Renovate custom manager for any pinned versions
+7. Add a Renovate custom manager for any pinned versions
 
 ## Security Considerations
 
