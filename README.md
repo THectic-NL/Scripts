@@ -8,7 +8,7 @@ Also browsable as a site: [scripts.thectic.nl](https://scripts.thectic.nl) (`src
 
 ```bash
 git clone --recurse-submodules https://github.com/Thectic-NL/Scripts.git
-cd scripts
+cd Scripts
 ```
 
 Bash:
