@@ -256,7 +256,7 @@
       "customType": "regex",
       "depNameTemplate": "kubernetes/kubernetes",
       "managerFilePatterns": [
-        "/^kubernetes/kubernetes_installer\\.sh$/"
+        "/^kubernetes/k8s_installer\\.sh$/"
       ]
     },
     {
@@ -268,7 +268,20 @@
       "customType": "regex",
       "depNameTemplate": "kubernetes/minikube",
       "managerFilePatterns": [
-        "/^kubernetes/kubernetes_installer\\.sh$/"
+        "/^kubernetes/k8s_installer\\.sh$/"
+      ]
+    },
+    {
+      "datasourceTemplate": "github-releases",
+      "matchStrings": [
+        "K3S_VERSION:-(?<currentValue>[^}]+)"
+      ],
+      "description": "K3s version in the bash installer",
+      "customType": "regex",
+      "depNameTemplate": "k3s-io/k3s",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\+k3s(?<build>\\d+)$",
+      "managerFilePatterns": [
+        "/^kubernetes/k3s_installer\\.sh$/"
       ]
     },
     {
