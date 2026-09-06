@@ -1,8 +1,9 @@
 # Redmi / Xiaomi ADB Debloat
 
 Non-root ADB debloat helper for Xiaomi/Redmi/POCO phones running HyperOS
-(or MIUI). Written for a Redmi Note 15 5G, but the package lists apply to
-most recent HyperOS devices.
+(or MIUI). Written for a Redmi Note 15 5G on HyperOS 3, but the package
+lists apply just as well to HyperOS 2 devices - community reports confirm
+no significant bloatware changes between the two.
 
 ## Prep (do this before connecting the phone)
 
@@ -70,6 +71,7 @@ Package lists and risk notes were compiled from:
 - [Minimal Xiaomi/Redmi Debloat List (Android 15 / HyperOS 2, 06/2025)](https://gist.github.com/gabeweb/a126aa204c2c08882ed192e16173457c)
 - [matthieu-pierson/debloat-hyperos-adb](https://github.com/matthieu-pierson/debloat-hyperos-adb)
 - [leechuanfeng/hyperos-debloat](https://github.com/leechuanfeng/hyperos-debloat)
+- [XDA: HyperOS 2/3 debloat guide & package list](https://xdaforums.com/t/how-to-debloat-hyperos-2-3-updated-list-of-packages-apps-200-tutorial-video-4-ways-methods-2026.4775822/)
 
 Bloatware varies by region, carrier and HyperOS version, so always run
 `list` first and read `info`'s notes before using `--include-miui`.
