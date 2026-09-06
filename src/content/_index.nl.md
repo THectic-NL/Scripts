@@ -85,6 +85,14 @@ Alle Linux-installers richten zich op dezelfde drie pakketbeheerfamilies:
 
 openSUSE (zypper) wordt niet ondersteund.
 
-{{< callout type="info" >}}
-Dependency-checks draaien wekelijks; scriptvalidatie (ShellCheck voor Bash, PSScriptAnalyzer voor PowerShell) draait bij elke push. Zie de [GitHub-repository](https://github.com/Thectic-NL/Scripts) voor de volledige broncode en conventies.
-{{< /callout >}}
+## Automatisering
+
+Dependency-checks draaien wekelijks via GitHub Actions. Bij gevonden updates wordt automatisch een PR aangemaakt.
+
+Scriptvalidatie draait bij elke push: ShellCheck voor Bash, PSScriptAnalyzer voor PowerShell.
+
+## Opmerkingen
+
+- `testssl.sh` zit als Git-submodule in de repo. Draai `git submodule update --init` als die na het klonen ontbreekt.
+- NGINX-updates vereisen handmatige checksum-verificatie: `.github/scripts/update-nginx-checksums.sh`
+- Sommige scripts zijn deels geschreven met hulp van GitHub Copilot.
