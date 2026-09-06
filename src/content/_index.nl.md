@@ -48,6 +48,7 @@ pwsh ./<tool>_installer.ps1
 | `ansible/` | `ansible_installer.sh` | Linux | Installeert Ansible via pip in een venv |
 | `docker/` | `docker_installer.sh` | Linux | Officiële Docker-repositories |
 | `kubernetes/` | `kubernetes_installer.sh` | Linux | kubectl + optioneel Minikube |
+| `kubernetes/` | `k3s_installer.sh` | Linux | K3s-clusternode: `--control-plane` / `--worker` |
 | `nginx/` | `nginx_installer.sh` | Linux | Custom build: OpenSSL 3.x, HTTP/2, HTTP/3, zstd, headers-more, ACME |
 | `openssh/` | `openssh_installer.sh` | Linux | Hardened config, alleen Ed25519, post-quantum KEX (ML-KEM) |
 | `podman/` | `podman_installer.sh` | Linux | Distributie-repositories |
@@ -72,6 +73,7 @@ Alle Linux-installers richten zich op dezelfde drie pakketbeheerfamilies:
 | `ansible_installer.sh` | ✅ | ✅ | ✅ |
 | `docker_installer.sh` | ✅ | ✅ | ✅ ¹ |
 | `kubernetes_installer.sh` | ✅ | ✅ | ✅ ² |
+| `k3s_installer.sh` | ✅ | ✅ | ✅ ³ |
 | `nginx_installer.sh` | ✅ | ✅ | ✅ |
 | `openssh_installer.sh` | ✅ | ✅ | ✅ |
 | `podman_installer.sh` | ✅ | ✅ | ✅ |
@@ -79,6 +81,7 @@ Alle Linux-installers richten zich op dezelfde drie pakketbeheerfamilies:
 
 ¹ Geen vendor-repo voor Arch; installatie via de community-repositories.
 ² Geen pkgs.k8s.io-repo voor Arch; kubectl wordt geïnstalleerd als checksum-geverifieerde binary.
+³ Geïnstalleerd via het officiële `get.k3s.io`-script (bevat containerd); vereist systemd.
 
 openSUSE (zypper) wordt niet ondersteund.
 
