@@ -141,7 +141,7 @@ Write-Log INFO "Installing Ansible (community package, bundles ansible-core)..."
     source "$VENV_DIR/bin/activate"
     command -v pip &>/dev/null || Stop-Script "pip not found in venv."
     Invoke-Cmd pip install --upgrade pip setuptools wheel
-    Invoke-Cmd pip install ansible==14.3.1
+    Invoke-Cmd pip install ansible==14.4.0
 ) || Stop-Script "Failed during venv operations."
 
 # === Global symlinks ===
