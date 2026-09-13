@@ -129,6 +129,8 @@ readonly TIER3_DO_NOT_REMOVE_DOC=(
     "com.qti.qcc|Qualcomm service some games (e.g. Monopoly GO) require"
     "com.miui.miwallpaper|needed for lock screen wallpaper rendering"
     "com.xiaomi.xmsf|Xiaomi Mi Service Framework; needed for OTA system updates"
+    "com.android.htmlviewer|despite the name, hosts the live com.android.settings.cloud.CloudSettings content provider on HyperOS 3; removing it crashes SystemUI's keyguard/notification shade in a boot loop until restored"
+    "miui.systemui.plugin|SystemUI plugin; removing it crash-loops SystemUI (confirmed live on a Redmi Note 15 5G / HyperOS 3)"
 )
 
 # ============================================================================
@@ -176,7 +178,7 @@ Test-PackageInstalled() {
 # Usage: Remove-Package "com.example.app"
 Remove-Package() {
     local pkg=$1
-    if adb shell pm uninstall -k --user 0 "$pkg" 2>&1 | grep -q Success; then
+    if adb shell pm uninstall -k --user 0 "$pkg" </dev/null 2>&1 | grep -q Success; then
         Write-Log SUCCESS "Removed: $pkg"
         return 0
     else
@@ -188,7 +190,7 @@ Remove-Package() {
 # Usage: Restore-Package "com.example.app"
 Restore-Package() {
     local pkg=$1
-    if adb shell pm install-existing --user 0 "$pkg" 2>&1 | grep -q Installed; then
+    if adb shell pm install-existing --user 0 "$pkg" </dev/null 2>&1 | grep -q Installed; then
         Write-Log SUCCESS "Restored: $pkg"
     else
         Write-Log ERROR "Failed to restore: $pkg (it may have been a Tier 1 app removed via the Play Store path, or is gone after a factory reset)"
