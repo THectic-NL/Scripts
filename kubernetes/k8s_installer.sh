@@ -159,13 +159,9 @@ export DEBIAN_FRONTEND=noninteractive
 # === Commands ===
 
 # Usage: Initialize-Node
-# Shared node prep for both roles. No-op if kubeadm is already installed.
+# Shared node prep for both roles. Safe to re-run: every step converges on the
+# pinned versions and settings, also when kubeadm or containerd already exist.
 Initialize-Node() {
-    if command -v kubeadm &>/dev/null; then
-        Write-Log WARN "kubeadm already installed ($(kubeadm version -o short 2>/dev/null)); skipping node prep."
-        return 0
-    fi
-
     local distro codename
     distro=$(Get-OsId)
     # shellcheck disable=SC1091
@@ -173,7 +169,7 @@ Initialize-Node() {
 
     Write-Log STEP "Disabling swap"
     swapoff -a
-    sed -i.bak '/\sswap\s/s/^\(.*\)$/#\1/' /etc/fstab
+    sed -i.bak '/^[^#].*\sswap\s/s/^/#/' /etc/fstab
 
     Write-Log STEP "Loading kernel modules (overlay, br_netfilter)"
     cat > /etc/modules-load.d/k8s.conf <<CONF
@@ -231,7 +227,7 @@ https://download.docker.com/linux/${distro} ${codename} stable" \
     chmod 644 /etc/apt/sources.list.d/kubernetes.list
 
     Invoke-Cmd apt-get update -y
-    Invoke-Cmd apt-get install -y "kubelet=${K8S_PKG_VERSION}" "kubeadm=${K8S_PKG_VERSION}" "kubectl=${K8S_PKG_VERSION}"
+    Invoke-Cmd apt-get install -y --allow-change-held-packages "kubelet=${K8S_PKG_VERSION}" "kubeadm=${K8S_PKG_VERSION}" "kubectl=${K8S_PKG_VERSION}"
     apt-mark hold kubelet kubeadm kubectl >> "$LOG_FILE" 2>&1
 
     Invoke-Cmd systemctl enable --now kubelet
@@ -239,6 +235,8 @@ https://download.docker.com/linux/${distro} ${codename} stable" \
 
 # Usage: Install-ControlPlane
 Install-ControlPlane() {
+    [[ "$POD_CIDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || \
+        Stop-Script "POD_CIDR should look like 10.244.0.0/16."
     Initialize-Node
 
     Write-Log STEP "Running kubeadm init (${K8S_VERSION}, pod CIDR ${POD_CIDR})"
@@ -257,17 +255,30 @@ Install-ControlPlane() {
     fi
     export KUBECONFIG=/etc/kubernetes/admin.conf
 
-    Write-Log STEP "Installing the Flannel CNI ${FLANNEL_VERSION}"
-    Invoke-Cmd kubectl apply -f "${FLANNEL_MANIFEST}"
+    # Flannel's manifest hardcodes 10.244.0.0/16; patch in POD_CIDR so a custom
+    # range matches what kubeadm hands out.
+    Write-Log STEP "Installing the Flannel CNI ${FLANNEL_VERSION} (network ${POD_CIDR})"
+    local manifest
+    manifest=$(mktemp --suffix=.yml)
+    curl -fsSL "${FLANNEL_MANIFEST}" -o "$manifest" 2>>"$LOG_FILE" || \
+        Stop-Script "Failed to download the Flannel manifest."
+    grep -q '"Network": "10.244.0.0/16"' "$manifest" || \
+        Stop-Script "Flannel manifest layout changed; cannot set the pod network."
+    sed -i "s|\"Network\": \"10.244.0.0/16\"|\"Network\": \"${POD_CIDR}\"|" "$manifest"
+    Invoke-Cmd kubectl apply -f "$manifest"
+    rm -f "$manifest"
 
     # The node only turns Ready once the CNI is up.
     Write-Log INFO "Waiting for the node to become Ready..."
-    local _
+    local _ ready=false
     for _ in $(seq 1 60); do
-        kubectl get node 2>/dev/null | grep -q ' Ready ' && break
+        if kubectl get node --no-headers 2>/dev/null | grep -q ' Ready '; then
+            ready=true; break
+        fi
         sleep 2
     done
-    kubectl get node || Write-Log WARN "Node not Ready yet; re-check with 'kubectl get node'."
+    kubectl get node || true
+    $ready || Stop-Script "Node not Ready after 120s. Inspect: kubectl -n kube-flannel get pods; journalctl -u kubelet -n 50. Join command, once fixed: sudo kubeadm token create --print-join-command"
 
     # Split the join line into the worker flags this script takes.
     local join_line endpoint join_token ca_hash kubeadm_ver

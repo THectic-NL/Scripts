@@ -118,7 +118,8 @@ Roles:
   --worker          Join this node to an existing cluster as a worker
 
 Options (worker):
-  --url URL         Control-plane API URL, or a bare IP/host (-> https://IP:6443)
+  --url HOST[:PORT] Control-plane API endpoint; port defaults to 6443
+                    (an https:// prefix is accepted)
   --token VALUE     Join value from the control plane
                     (/var/lib/rancher/k3s/server/node-token)
 
@@ -164,12 +165,15 @@ Install-ControlPlane() {
     Invoke-Cmd systemctl enable k3s
 
     Write-Log INFO "Waiting for the node to become Ready..."
-    local _
-    for _ in $(seq 1 45); do
-        k3s kubectl get node 2>/dev/null | grep -q ' Ready ' && break
+    local _ ready=false
+    for _ in $(seq 1 60); do
+        if k3s kubectl get node --no-headers 2>/dev/null | grep -q ' Ready '; then
+            ready=true; break
+        fi
         sleep 2
     done
-    k3s kubectl get node || Write-Log WARN "Node not Ready yet; re-check with 'sudo kubectl get node'."
+    k3s kubectl get node || true
+    $ready || Stop-Script "Node not Ready after 120s. Inspect: journalctl -u k3s -n 50. Join value, once fixed: /var/lib/rancher/k3s/server/node-token"
 
     local node_ip node_join k3s_ver
     node_ip=$(hostname -I | awk '{print $1}')
@@ -188,12 +192,19 @@ Install-ControlPlane() {
     echo -e "  sudo ./${SCRIPT_NAME} --worker \\"
     echo -e "      --url https://${node_ip}:6443 --token ${node_join:-(see /var/lib/rancher/k3s/server/node-token)}"
     echo ""
+    # The installer links kubectl to k3s, which reads /etc/rancher/k3s/k3s.yaml
+    # by default. It skips the link when another kubectl already exists; that
+    # one looks in ~/.kube/config, so it needs KUBECONFIG.
+    local kubectl_prefix=""
+    if [[ "$(readlink -f "$(command -v kubectl 2>/dev/null)" 2>/dev/null)" != "$(readlink -f "$(command -v k3s)")" ]]; then
+        kubectl_prefix="KUBECONFIG=/etc/rancher/k3s/k3s.yaml "
+    fi
     if [[ -n "$kube_group" ]]; then
         echo -e "${BOLD}Use kubectl (as ${kube_user}, no sudo needed)${NC}"
-        echo -e "  kubectl get nodes"
+        echo -e "  ${kubectl_prefix}kubectl get nodes"
     else
         echo -e "${BOLD}Use kubectl${NC}"
-        echo -e "  sudo kubectl get nodes"
+        echo -e "  sudo ${kubectl_prefix}kubectl get nodes"
     fi
     echo ""
     echo -e "${YELLOW}Cloud/firewall:${NC} nodes must reach each other on TCP 6443, TCP 10250 and"
@@ -203,12 +214,16 @@ Install-ControlPlane() {
 
 # Usage: Install-Worker <server-url-or-ip> <join-value>
 Install-Worker() {
-    local url=$1 join=$2
+    local endpoint=$1 join=$2 url
 
-    [[ -n "$url"  ]] || Stop-Script "Worker needs --url https://<control-plane-ip>:6443"
-    [[ -n "$join" ]] || Stop-Script "Worker needs --token <value from the control plane>"
-    [[ "$url" == https://* ]] || url="https://${url}:6443"
+    [[ -n "$endpoint" ]] || Stop-Script "Worker needs --url <control-plane-ip>:6443"
+    [[ -n "$join"     ]] || Stop-Script "Worker needs --token <value from the control plane>"
+    endpoint=${endpoint#https://}
+    endpoint=${endpoint%/}
+    [[ "$endpoint" == *:* ]] || endpoint="${endpoint}:6443"
+    [[ "$endpoint" =~ ^[A-Za-z0-9.-]+:[0-9]+$ ]] || Stop-Script "The --url value should look like 10.0.0.1:6443."
     [[ "$join" =~ ^[A-Za-z0-9:._-]+$ ]] || Stop-Script "The --token value has unexpected characters."
+    url="https://${endpoint}"
 
     # Fail fast when the API port is unreachable (on AWS: security group).
     # /ping is served unauthenticated by the K3s supervisor and returns "pong".
