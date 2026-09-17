@@ -7,6 +7,13 @@
 # so it works on any systemd-based Linux without a distro package manager.
 # Kubernetes role names are used (control plane / worker); K3s' own
 # "server / agent" wording is mapped internally.
+#
+#   Control plane:  sudo ./<script> --control-plane
+#   Worker:         sudo ./<script> --worker \
+#                       --url https://<control-plane-ip>:6443 --token <token>
+#
+# This file is kept identical in THectic-NL/Scripts (kubernetes/k3s_installer.sh)
+# and Stensel8/DevOps-Security (kubernetes/install-k3s.sh); change both.
 # Run as root.
 #
 
@@ -99,9 +106,12 @@ Invoke-Cmd() {
 # Usage
 # ============================================================================
 
+# Name as invoked, so help and join hints match however the file was saved.
+SCRIPT_NAME=$(basename "$0")
+
 Show-Usage() {
-    cat <<'EOF'
-Usage: k3s_installer.sh <role> [options]
+    cat <<EOF
+Usage: ${SCRIPT_NAME} <role> [options]
 
 Roles:
   --control-plane   Install the first K3s node (control plane)
@@ -119,8 +129,8 @@ After a --control-plane install the summary prints the join value and the
 exact --worker command to run on the other nodes.
 
 Examples:
-  sudo ./k3s_installer.sh --control-plane
-  sudo ./k3s_installer.sh --worker --url https://10.0.0.1:6443 --token K10abc...
+  sudo ./${SCRIPT_NAME} --control-plane
+  sudo ./${SCRIPT_NAME} --worker --url https://10.0.0.1:6443 --token K10abc...
 EOF
 }
 
@@ -136,10 +146,20 @@ K3S_VERSION="${K3S_VERSION:-v1.37.0+k3s1}"
 Install-ControlPlane() {
     Write-Log INFO "Installing K3s ${K3S_VERSION} (control plane)"
 
+    # The kubeconfig is root-only by default, so 'kubectl' fails for the sudo
+    # user. Hand it to that user's group (0640) instead of making it world-
+    # readable; the flags end up in the unit, so they survive k3s restarts.
+    local kube_user="${SUDO_USER:-}" kube_group=""
+    local -a server_args=(server)
+    if [[ -n "$kube_user" && "$kube_user" != root ]]; then
+        kube_group=$(id -gn "$kube_user")
+        server_args+=(--write-kubeconfig-mode 0640 --write-kubeconfig-group "$kube_group")
+    fi
+
     # get.k3s.io is Rancher's official install path; it is a remote script.
     Write-Log WARN "Fetching and running the official installer from https://get.k3s.io"
     curl -sfL https://get.k3s.io | \
-        INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server >> "$LOG_FILE" 2>&1 || \
+        INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - "${server_args[@]}" >> "$LOG_FILE" 2>&1 || \
         Stop-Script "K3s install failed. Check log: $LOG_FILE"
     Invoke-Cmd systemctl enable k3s
 
@@ -149,7 +169,7 @@ Install-ControlPlane() {
         k3s kubectl get node 2>/dev/null | grep -q ' Ready ' && break
         sleep 2
     done
-    k3s kubectl get node || Write-Log WARN "Node not Ready yet; re-check with 'k3s kubectl get node'."
+    k3s kubectl get node || Write-Log WARN "Node not Ready yet; re-check with 'sudo kubectl get node'."
 
     local node_ip node_join k3s_ver
     node_ip=$(hostname -I | awk '{print $1}')
@@ -160,13 +180,25 @@ Install-ControlPlane() {
     Write-Log SUCCESS "K3s control plane ready!"
     echo -e "${GREEN}==============================================================${NC}\n"
     echo -e "${BLUE}K3s:${NC}          ${GREEN}${k3s_ver}${NC}"
-    echo -e "${BLUE}kubeconfig:${NC}   ${GREEN}/etc/rancher/k3s/k3s.yaml${NC}"
+    echo -e "${BLUE}API URL:${NC}      ${GREEN}https://${node_ip}:6443${NC}"
+    echo -e "${BLUE}kubeconfig:${NC}   ${GREEN}/etc/rancher/k3s/k3s.yaml${NC}${kube_group:+ (readable by group ${kube_group})}"
     echo -e "${BLUE}Log:${NC}          ${GREEN}${LOG_FILE}${NC}"
     echo ""
-    echo -e "${BLUE}Join a worker:${NC}"
-    echo -e "  sudo ./k3s_installer.sh --worker --url https://${node_ip}:6443 --token ${node_join:-(see /var/lib/rancher/k3s/server/node-token)}"
+    echo -e "${BOLD}Join a worker (run on each worker node)${NC}"
+    echo -e "  sudo ./${SCRIPT_NAME} --worker \\"
+    echo -e "      --url https://${node_ip}:6443 --token ${node_join:-(see /var/lib/rancher/k3s/server/node-token)}"
     echo ""
-    echo -e "${BLUE}Use kubectl:${NC}  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml   # or: k3s kubectl ..."
+    if [[ -n "$kube_group" ]]; then
+        echo -e "${BOLD}Use kubectl (as ${kube_user}, no sudo needed)${NC}"
+        echo -e "  kubectl get nodes"
+    else
+        echo -e "${BOLD}Use kubectl${NC}"
+        echo -e "  sudo kubectl get nodes"
+    fi
+    echo ""
+    echo -e "${YELLOW}Cloud/firewall:${NC} nodes must reach each other on TCP 6443, TCP 10250 and"
+    echo -e "     UDP 8472 (on AWS: a self-referencing 'All traffic' security group rule),"
+    echo -e "     plus inbound on any NodePort you expose (30000-32767)."
 }
 
 # Usage: Install-Worker <server-url-or-ip> <join-value>
@@ -178,6 +210,12 @@ Install-Worker() {
     [[ "$url" == https://* ]] || url="https://${url}:6443"
     [[ "$join" =~ ^[A-Za-z0-9:._-]+$ ]] || Stop-Script "The --token value has unexpected characters."
 
+    # Fail fast when the API port is unreachable (on AWS: security group).
+    # /ping is served unauthenticated by the K3s supervisor and returns "pong".
+    Write-Log INFO "Checking that ${url} is reachable..."
+    curl -ksf --max-time 5 "${url}/ping" 2>/dev/null | grep -q pong || \
+        Stop-Script "Cannot reach ${url}/ping. Check the URL, that K3s runs on the control plane, and that the security group allows TCP 6443 from this node."
+
     Write-Log INFO "Installing K3s ${K3S_VERSION} (worker), joining ${url}"
 
     # get.k3s.io is Rancher's official install path; it is a remote script.
@@ -187,6 +225,19 @@ Install-Worker() {
         sh -s - agent >> "$LOG_FILE" 2>&1 || \
         Stop-Script "K3s agent install failed. Check log: $LOG_FILE"
     Invoke-Cmd systemctl enable k3s-agent
+
+    # The installer returns as soon as the service starts, not when the join
+    # succeeds. The kubelet client cert is only issued after the server accepts
+    # the token, so its presence means the node registered.
+    Write-Log INFO "Waiting for the control plane to accept this node..."
+    local _ joined=false
+    for _ in $(seq 1 30); do
+        if [[ -s /var/lib/rancher/k3s/agent/client-kubelet.crt ]]; then
+            joined=true; break
+        fi
+        sleep 2
+    done
+    $joined || Stop-Script "Agent did not join within 60s. Inspect: journalctl -u k3s-agent -n 50 (wrong token, or UDP 8472 / TCP 10250 blocked?)"
 
     local k3s_ver
     k3s_ver=$(k3s --version 2>/dev/null | head -n1) || k3s_ver="N/A"
@@ -198,7 +249,11 @@ Install-Worker() {
     echo -e "${BLUE}Joined:${NC}       ${GREEN}${url}${NC}"
     echo -e "${BLUE}Log:${NC}          ${GREEN}${LOG_FILE}${NC}"
     echo ""
-    echo -e "${BLUE}Verify:${NC}       k3s kubectl get node   # run on the control plane"
+    echo -e "${BOLD}Verify on the control plane${NC}"
+    echo -e "  kubectl get nodes        # this node should be Ready within ~30s"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} kubectl does not work on a worker (no kubeconfig here, so it"
+    echo -e "      falls back to localhost:8080). Manage the cluster from the control plane."
 }
 
 # ============================================================================
@@ -237,7 +292,7 @@ Test-Root
 
 if command -v k3s &>/dev/null; then
     Write-Log WARN "K3s is already installed: $(k3s --version | head -n1)"
-    Write-Log INFO "Remove it with k3s-uninstall.sh or k3s-agent-uninstall.sh first."
+    Write-Log INFO "Remove it first: k3s-uninstall.sh (control plane) or k3s-agent-uninstall.sh (worker)."
     exit 0
 fi
 
