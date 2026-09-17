@@ -10,7 +10,7 @@ This repository uses Renovate plus a few GitHub Actions workflows to keep depend
 Automatically monitors and creates PRs for:
 - GitHub Actions updates
 - The `TLS-tools/testssl.sh` git submodule
-- Hardcoded versions in installer scripts (NGINX and its modules, Ansible, kubectl, minikube, Vagrant) via custom regex managers
+- Hardcoded versions in installer scripts (NGINX and its modules, Ansible, Kubernetes, Flannel, K3s, Vagrant) via custom regex managers
 
 **Important:** the custom regex managers match exact variable formats such as
 `NGINX_VERSION="1.31.1"` (bash) and `$Script:NGINX_VERSION = '1.31.1'`

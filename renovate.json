@@ -262,11 +262,11 @@
     {
       "datasourceTemplate": "github-releases",
       "matchStrings": [
-        "MINIKUBE_VERSION:-(?<currentValue>v[0-9.]+)"
+        "FLANNEL_VERSION:-(?<currentValue>v[0-9.]+)"
       ],
-      "description": "Minikube version in the bash installer",
+      "description": "Flannel CNI version in the bash installer",
       "customType": "regex",
-      "depNameTemplate": "kubernetes/minikube",
+      "depNameTemplate": "flannel-io/flannel",
       "managerFilePatterns": [
         "/^kubernetes/k8s_installer\\.sh$/"
       ]
