@@ -91,6 +91,30 @@ Get-OsId() {
     fi
 }
 
+# Usage: id_like=$(Get-OsIdLike)  ->  lowercase /etc/os-release ID_LIKE, or an
+# empty string. Call in $(...) so sourcing stays contained.
+Get-OsIdLike() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        local id_like="${ID_LIKE:-}"
+        echo "${id_like,,}"
+    fi
+}
+
+# Usage: Test-ArchLike <os-id>  (true for Arch Linux and its derivatives)
+# Derivatives ship their own ID (cachyos, manjaro, endeavouros, ...) and only
+# advertise the family through ID_LIKE, so matching on ID alone is not enough.
+Test-ArchLike() {
+    case " $(Get-OsIdLike) " in
+        *" arch "*) return 0 ;;
+    esac
+    case "$1" in
+        arch|archarm|cachyos|manjaro|endeavouros|garuda|arcolinux|artix) return 0 ;;
+    esac
+    return 1
+}
+
 # Usage: Invoke-Cmd command [args...]
 # Logs the command, sends its output to LOG_FILE when set, aborts on failure.
 Invoke-Cmd() {
@@ -100,6 +124,21 @@ Invoke-Cmd() {
     else
         "$@" || Stop-Script "Command failed: '$*'"
     fi
+}
+
+# Usage: Show-Intent "headline" "detail" ["detail" ...]
+# Prints what the script is about to do, before it changes anything. It never
+# asks a question and never waits, so unattended runs (cloud-init, EC2 user
+# data) are unaffected.
+Show-Intent() {
+    local headline=$1; shift
+    local detail
+    echo
+    echo -e "${BOLD}${headline}${NC}"
+    for detail in "$@"; do
+        echo -e "  ${BLUE}-${NC} ${detail}"
+    done
+    echo
 }
 
 # ============================================================================
@@ -407,7 +446,17 @@ if [[ -f /etc/kubernetes/admin.conf || -f /etc/kubernetes/kubelet.conf ]]; then
 fi
 
 case "$ROLE" in
-    control-plane) Install-ControlPlane ;;
-    worker)        Install-Worker "$SERVER_URL" "$JOIN_VALUE" "$CA_HASH" ;;
+    control-plane)
+        Show-Intent "This script will turn this machine into a Kubernetes ${K8S_VERSION} control plane." \
+            "Disable swap and load the required kernel modules" \
+            "Install containerd, kubelet, kubeadm and kubectl" \
+            "Run 'kubeadm init' and deploy a pod network"
+        Install-ControlPlane ;;
+    worker)
+        Show-Intent "This script will join this machine to a Kubernetes ${K8S_VERSION} cluster as a worker." \
+            "Disable swap and load the required kernel modules" \
+            "Install containerd, kubelet, kubeadm and kubectl" \
+            "Run 'kubeadm join' against ${SERVER_URL:-<unset>}"
+        Install-Worker "$SERVER_URL" "$JOIN_VALUE" "$CA_HASH" ;;
     *)             Show-Usage; Stop-Script "Pass --control-plane or --worker." ;;
 esac

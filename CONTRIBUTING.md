@@ -34,10 +34,17 @@ Runs on all PRs and commits to validate:
 
 ### Shared helpers (bash)
 
-Every bash script is standalone but carries the same helper functions
-(colors, `Write-Log`, `Stop-Script`, `Test-Root`, `Get-PkgMgr`, `Get-OsId`,
-`Invoke-Cmd`). When you improve a helper, apply the same change in the other
-scripts so they stay aligned.
+Every bash script is standalone but carries the same helper functions, in this
+order: colors, `Write-Log`, `Stop-Script`, `Test-Root`, `Get-PkgMgr`,
+`Get-OsId`, `Get-OsIdLike`, `Test-ArchLike`, `Invoke-Cmd`, `Show-Intent`.
+When you improve a helper, apply the same change in the other scripts so they
+stay aligned.
+
+The installers and `.github/scripts/update-nginx-checksums.sh` carry the whole
+block, including helpers they never call, so it can be copied between them
+verbatim. `system/planned_shutdown.sh` and `android/redmi_debloat.sh` are
+distro-agnostic and carry only the helpers they use, but those copies must
+still match the others byte for byte.
 
 ### Naming convention
 
@@ -51,6 +58,9 @@ Hyphenated function names are bash-only syntax, so scripts must keep the
 All Linux installers support apt (Debian/Ubuntu), dnf (Fedora/RHEL) and
 pacman (Arch). New installers should cover all three; use the shared
 `Get-PkgMgr` helper and add a clear `Stop-Script` for unsupported systems.
+
+Branch on the package manager, not on the distro name. `Get-PkgMgr` already
+covers every derivative.
 
 ### Version Configuration
 

@@ -81,6 +81,30 @@ Get-OsId() {
     fi
 }
 
+# Usage: id_like=$(Get-OsIdLike)  ->  lowercase /etc/os-release ID_LIKE, or an
+# empty string. Call in $(...) so sourcing stays contained.
+Get-OsIdLike() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        local id_like="${ID_LIKE:-}"
+        echo "${id_like,,}"
+    fi
+}
+
+# Usage: Test-ArchLike <os-id>  (true for Arch Linux and its derivatives)
+# Derivatives ship their own ID (cachyos, manjaro, endeavouros, ...) and only
+# advertise the family through ID_LIKE, so matching on ID alone is not enough.
+Test-ArchLike() {
+    case " $(Get-OsIdLike) " in
+        *" arch "*) return 0 ;;
+    esac
+    case "$1" in
+        arch|archarm|cachyos|manjaro|endeavouros|garuda|arcolinux|artix) return 0 ;;
+    esac
+    return 1
+}
+
 # Usage: Invoke-Cmd command [args...]
 # Logs the command, sends its output to LOG_FILE when set, aborts on failure.
 Invoke-Cmd() {
@@ -92,8 +116,28 @@ Invoke-Cmd() {
     fi
 }
 
+# Usage: Show-Intent "headline" "detail" ["detail" ...]
+# Prints what the script is about to do, before it changes anything. It never
+# asks a question and never waits, so unattended runs (cloud-init, EC2 user
+# data) are unaffected.
+Show-Intent() {
+    local headline=$1; shift
+    local detail
+    echo
+    echo -e "${BOLD}${headline}${NC}"
+    for detail in "$@"; do
+        echo -e "  ${BLUE}-${NC} ${detail}"
+    done
+    echo
+}
+
 # === Root check ===
 Test-Root
+
+Show-Intent "This script will install Terraform on this machine." \
+    "Add the HashiCorp package repository (apt and dnf only)" \
+    "On Arch-based systems this upgrades all system packages (pacman -Syu)" \
+    "Install the terraform package"
 
 # === Already installed? ===
 if command -v terraform >/dev/null 2>&1; then

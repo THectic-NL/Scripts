@@ -82,6 +82,30 @@ Get-OsId() {
     fi
 }
 
+# Usage: id_like=$(Get-OsIdLike)  ->  lowercase /etc/os-release ID_LIKE, or an
+# empty string. Call in $(...) so sourcing stays contained.
+Get-OsIdLike() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        local id_like="${ID_LIKE:-}"
+        echo "${id_like,,}"
+    fi
+}
+
+# Usage: Test-ArchLike <os-id>  (true for Arch Linux and its derivatives)
+# Derivatives ship their own ID (cachyos, manjaro, endeavouros, ...) and only
+# advertise the family through ID_LIKE, so matching on ID alone is not enough.
+Test-ArchLike() {
+    case " $(Get-OsIdLike) " in
+        *" arch "*) return 0 ;;
+    esac
+    case "$1" in
+        arch|archarm|cachyos|manjaro|endeavouros|garuda|arcolinux|artix) return 0 ;;
+    esac
+    return 1
+}
+
 # Usage: Invoke-Cmd command [args...]
 # Logs the command, sends its output to LOG_FILE when set, aborts on failure.
 Invoke-Cmd() {
@@ -91,6 +115,21 @@ Invoke-Cmd() {
     else
         "$@" || Stop-Script "Command failed: '$*'"
     fi
+}
+
+# Usage: Show-Intent "headline" "detail" ["detail" ...]
+# Prints what the script is about to do, before it changes anything. It never
+# asks a question and never waits, so unattended runs (cloud-init, EC2 user
+# data) are unaffected.
+Show-Intent() {
+    local headline=$1; shift
+    local detail
+    echo
+    echo -e "${BOLD}${headline}${NC}"
+    for detail in "$@"; do
+        echo -e "  ${BLUE}-${NC} ${detail}"
+    done
+    echo
 }
 
 # === Root check ===
@@ -119,7 +158,8 @@ Install-Podman() {
             ;;
         pacman)
             Write-Log INFO "Pacman-based system detected. Installing via pacman."
-            Invoke-Cmd pacman -Sy --noconfirm podman
+            # -Syu rather than -Sy: partial upgrades break Arch-based systems.
+            Invoke-Cmd pacman -Syu --noconfirm podman
             ;;
         *)
             Stop-Script "Unsupported system. Please install Podman manually."
@@ -156,8 +196,15 @@ Invoke-Main() {
         Show-Usage
     fi
     case "$1" in
-        install) Install-Podman ;;
-        remove)  Remove-Podman ;;
+        install)
+            Show-Intent "This script will install Podman on this machine." \
+                "Install the podman package from your distro's repositories" \
+                "On Arch-based systems this upgrades all system packages (pacman -Syu)"
+            Install-Podman ;;
+        remove)
+            Show-Intent "This script will remove Podman from this machine." \
+                "Uninstall the podman package and its dependencies"
+            Remove-Podman ;;
         *)       Show-Usage ;;
     esac
 }

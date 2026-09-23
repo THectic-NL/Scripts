@@ -96,6 +96,30 @@ Get-OsId() {
     fi
 }
 
+# Usage: id_like=$(Get-OsIdLike)  ->  lowercase /etc/os-release ID_LIKE, or an
+# empty string. Call in $(...) so sourcing stays contained.
+Get-OsIdLike() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        local id_like="${ID_LIKE:-}"
+        echo "${id_like,,}"
+    fi
+}
+
+# Usage: Test-ArchLike <os-id>  (true for Arch Linux and its derivatives)
+# Derivatives ship their own ID (cachyos, manjaro, endeavouros, ...) and only
+# advertise the family through ID_LIKE, so matching on ID alone is not enough.
+Test-ArchLike() {
+    case " $(Get-OsIdLike) " in
+        *" arch "*) return 0 ;;
+    esac
+    case "$1" in
+        arch|archarm|cachyos|manjaro|endeavouros|garuda|arcolinux|artix) return 0 ;;
+    esac
+    return 1
+}
+
 # Usage: Invoke-Cmd command [args...]
 # Logs the command, sends its output to LOG_FILE when set, aborts on failure.
 Invoke-Cmd() {
@@ -105,6 +129,21 @@ Invoke-Cmd() {
     else
         "$@" || Stop-Script "Command failed: '$*'"
     fi
+}
+
+# Usage: Show-Intent "headline" "detail" ["detail" ...]
+# Prints what the script is about to do, before it changes anything. It never
+# asks a question and never waits, so unattended runs (cloud-init, EC2 user
+# data) are unaffected.
+Show-Intent() {
+    local headline=$1; shift
+    local detail
+    echo
+    echo -e "${BOLD}${headline}${NC}"
+    for detail in "$@"; do
+        echo -e "  ${BLUE}-${NC} ${detail}"
+    done
+    echo
 }
 
 # ============================================================================
@@ -305,7 +344,8 @@ Install-Dependencies() {
             dnf install -y -q gcc gcc-c++ make pcre2-devel zlib-devel libzstd-devel openssl-devel curl perl cargo pkgconf-pkg-config clang gawk cmake >/dev/null 2>&1
             ;;
         pacman)
-            if ! pacman -Sy --noconfirm --needed base-devel pcre2 zstd openssl curl clang gawk cmake pkgconf >/dev/null 2>&1; then
+            # -Syu rather than -Sy: partial upgrades break Arch-based systems.
+            if ! pacman -Syu --noconfirm --needed base-devel pcre2 zstd openssl curl clang gawk cmake pkgconf >/dev/null 2>&1; then
                 Write-Log WARN "pacman install failed, will try rustup for cargo. Note: zlib is not required (zlib-ng-compat provides it)."
             fi
             ;;
@@ -1065,6 +1105,12 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 case "$COMMAND" in
     install)
+        Show-Intent "This script will build and install NGINX ${NGINX_VERSION} from source." \
+            "Upgrade all system packages" \
+            "Install compilers and build dependencies" \
+            "Download and verify the NGINX sources and modules" \
+            "Compile NGINX, which takes several minutes" \
+            "Install it and replace an existing NGINX configuration"
         Update-SystemPackages
         Test-RunningWebServers
         Install-Dependencies
@@ -1075,6 +1121,9 @@ case "$COMMAND" in
         echo "Installation log: $LOG_FILE"
         ;;
     remove)
+        Show-Intent "This script will remove NGINX from this machine." \
+            "Stop and disable the NGINX service" \
+            "Delete the NGINX binaries and configuration"
         Remove-Nginx
         echo
         echo "Removal log: $LOG_FILE"
