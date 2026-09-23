@@ -118,6 +118,40 @@ Test-ArchLike() {
     return 1
 }
 
+# Usage: Test-MutableOs "<tool>" "<alternative>" ["<alternative>" ...]
+# Exits when the root filesystem is image-based or read-only. A package manager
+# install there is either refused outright (rpm-ostree) or discarded on the next
+# system update, so stop with alternatives rather than failing halfway through.
+Test-MutableOs() {
+    local tool=$1; shift
+    local kind="" alt
+    if [[ -f /run/ostree-booted ]]; then
+        # The marker rpm-ostree itself uses. Do not test /run/ostree: that
+        # directory also shows up on ordinary systems.
+        kind="an ostree/bootc image (Fedora Silverblue, Kinoite, Bazzite, CoreOS)"
+    elif command -v transactional-update >/dev/null 2>&1; then
+        kind="a transactional-update system (openSUSE MicroOS, Aeon)"
+    elif [[ -e /etc/NIXOS ]]; then
+        kind="NixOS, where packages belong in your configuration.nix"
+    elif command -v steamos-readonly >/dev/null 2>&1; then
+        kind="SteamOS, whose root filesystem is read-only by default"
+    elif findmnt -no OPTIONS /usr 2>/dev/null | grep -qw ro; then
+        kind="a system with a read-only /usr"
+    else
+        return 0
+    fi
+    Write-Log ERROR "${tool} cannot be installed with the system package manager here."
+    Write-Log WARN  "Detected ${kind}."
+    Write-Log WARN  "Installs would be refused, or lost on the next system update."
+    if [[ $# -gt 0 ]]; then
+        Write-Log INFO "Use one of these instead:"
+        for alt in "$@"; do
+            Write-Log INFO "  - ${alt}"
+        done
+    fi
+    exit 1
+}
+
 # Usage: Invoke-Cmd command [args...]
 # Logs the command, sends its output to LOG_FILE when set, aborts on failure.
 Invoke-Cmd() {
@@ -603,6 +637,9 @@ Test-OpenSshInstallation() {
 Invoke-Main() {
     case "${1:-help}" in
         install)
+            Test-MutableOs "OpenSSH" \
+                "OpenSSH is part of the base image; drop your hardening into /etc/ssh/sshd_config.d/" \
+                "Then apply it with: systemctl restart sshd"
             Show-Intent "This script will install and harden OpenSSH on this machine." \
                 "Install the OpenSSH server package" \
                 "On Arch-based systems this upgrades all system packages (pacman -Syu)" \

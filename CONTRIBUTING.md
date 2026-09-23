@@ -36,7 +36,8 @@ Runs on all PRs and commits to validate:
 
 Every bash script is standalone but carries the same helper functions, in this
 order: colors, `Write-Log`, `Stop-Script`, `Test-Root`, `Get-PkgMgr`,
-`Get-OsId`, `Get-OsIdLike`, `Test-ArchLike`, `Invoke-Cmd`, `Show-Intent`.
+`Get-OsId`, `Get-OsIdLike`, `Test-ArchLike`, `Test-MutableOs`, `Invoke-Cmd`,
+`Show-Intent`.
 When you improve a helper, apply the same change in the other scripts so they
 stay aligned.
 
@@ -61,6 +62,11 @@ pacman (Arch). New installers should cover all three; use the shared
 
 Branch on the package manager, not on the distro name. `Get-PkgMgr` already
 covers every derivative.
+
+Installers call `Test-MutableOs` before they touch anything, so image-based
+hosts (Fedora Atomic, openSUSE MicroOS, NixOS, SteamOS) get alternatives
+instead of a half-finished install. Detect those with `/run/ostree-booted`,
+never with `/run/ostree` -- that one turns up on ordinary systems too.
 
 ### Version Configuration
 
