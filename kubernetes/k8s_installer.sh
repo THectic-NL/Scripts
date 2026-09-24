@@ -216,7 +216,7 @@ USAGE
 LOG_FILE="/tmp/k8s_install_$(date +%Y%m%d_%H%M%S).log"
 
 # Pinned releases (Renovate-managed).
-K8S_VERSION="${K8S_VERSION:-v1.37.0}"
+K8S_VERSION="${K8S_VERSION:-v1.37.1}"
 FLANNEL_VERSION="${FLANNEL_VERSION:-v0.28.9}"
 
 # pkgs.k8s.io repos are per minor version (v1.37); the patch release is pinned
