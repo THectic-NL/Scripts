@@ -785,7 +785,12 @@ EOF
     # applies to TLS 1.2 and below, which are refused here (clients older
     # than ~2018 cannot connect).
     ssl_protocols TLSv1.3;
-    ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;
+    # X25519-only groups: every TLS 1.3 client supports plain X25519, so the
+    # legacy prime256v1/secp384r1 entries are never negotiated — drop them.
+    ssl_ecdh_curve X25519MLKEM768:X25519;
+    # Kernel TLS offload: keeps sendfile working under TLS (OpenSSL 3.x
+    # built with kTLS + kernel 5.2+). Remove this line if nginx -t rejects it.
+    ssl_conf_command Options KTLS;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
@@ -829,7 +834,6 @@ EOF
         add_header X-Protocol $server_protocol always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
         add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
