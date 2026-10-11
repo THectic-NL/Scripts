@@ -6,8 +6,9 @@ set -euo pipefail
 # ============================================================================
 #
 # Description:
-#   Builds and installs NGINX with OpenSSL, HTTP/3, zstd compression,
-#   and ACME support on Linux.
+#   Builds and installs NGINX from source against the system OpenSSL,
+#   with HTTP/3, zstd compression, ACME support, and a hardened
+#   TLS 1.3-only configuration.
 #
 # Usage:
 #   ./nginx_installer.sh install [options]   - Build and install NGINX
@@ -459,7 +460,7 @@ Get-Sources() {
     Write-Log INFO "Extracting archives"
 
     # Clean previous extractions
-    rm -rf nginx openssl pcre2 zlib headers-more zstd-module nginx-acme 2>/dev/null || true
+    rm -rf nginx pcre2 zlib headers-more zstd-module nginx-acme 2>/dev/null || true
 
     tar xzf nginx.tgz && mv "nginx-${NGINX_VERSION}" nginx
     tar xzf pcre2.tgz && mv "pcre2-${PCRE2_VERSION}" pcre2
@@ -1165,7 +1166,7 @@ case "$COMMAND" in
             "Install compilers and build dependencies" \
             "Download and verify the NGINX sources and modules" \
             "Compile NGINX, which takes several minutes" \
-            "Install it and replace an existing NGINX configuration"
+            "Install it, preserving an existing NGINX configuration"
         Update-SystemPackages
         Test-RunningWebServers
         Install-Dependencies
