@@ -547,6 +547,7 @@ Build-Nginx() {
         --with-stream_realip_module
         --with-file-aio
         --with-threads
+        --with-cc-opt='-O2 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIC'
         --modules-path="${NGINX_MODULES_PATH}"
     )
     [[ $SKIP_HEADERS_MORE == true ]] || configure_args+=(--add-dynamic-module="$BUILD_DIR/headers-more")
@@ -717,11 +718,13 @@ EOF
 
 user nginx;
 worker_processes auto;
+worker_rlimit_nofile 65535;
 error_log /var/log/nginx/error.log warn;
 pid /run/nginx.pid;
 
 events {
     worker_connections 1024;
+    multi_accept on;
 }
 
 http {
@@ -733,7 +736,7 @@ EOF
 
     if [[ $SKIP_HEADERS_MORE != true ]]; then
         cat >> /etc/nginx/nginx.conf <<'EOF'
-    more_set_headers 'Server: nginx';
+    more_clear_headers 'Server';
 EOF
     fi
 
@@ -751,6 +754,9 @@ EOF
     keepalive_timeout  65;
     types_hash_max_size 4096;
     types_hash_bucket_size 128;
+
+    # nginx defaults to 1m, which breaks uploads (e.g. *arr imports)
+    client_max_body_size 16m;
 
     # Gzip compression
     gzip  on;
@@ -774,12 +780,11 @@ EOF
 
     cat >> /etc/nginx/nginx.conf <<'EOF'
 
-    # SSL/TLS configuration
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
-    # TLS 1.2 ciphers — ECDSA-only (matches the ECDSA certificate generated below).
-    # TLS 1.3 ciphers are built-in and always secure; no need to list them.
-    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256;
+    # SSL/TLS configuration — TLS 1.3 only.
+    # TLS 1.3 suites are AEAD-only and secure by default; ssl_ciphers only
+    # applies to TLS 1.2 and below, which are refused here (clients older
+    # than ~2018 cannot connect).
+    ssl_protocols TLSv1.3;
     ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -790,6 +795,14 @@ EOF
     quic_retry on;
     # 0-RTT disabled: no replay attack protection configured at application layer
     ssl_early_data off;
+
+    # Refuse handshakes for names we do not host, instead of serving the
+    # certificate to scanners and SNI probes hitting the bare IP address.
+    server {
+        listen 443 ssl default_server;
+        listen [::]:443 ssl default_server;
+        ssl_reject_handshake on;
+    }
 
     server {
         listen 80;
