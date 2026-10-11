@@ -804,9 +804,16 @@ EOF
 
     # Refuse handshakes for names we do not host, instead of serving the
     # certificate to scanners and SNI probes hitting the bare IP address.
+    # This block must also own the QUIC listeners: a server without a quic
+    # listen directive never takes part in HTTP/3 SNI selection, so an
+    # unknown-SNI QUIC client would fall back to the first server that has
+    # one and still receive its certificate. reuseport may appear only once
+    # per address:port, so the real server below uses plain quic listeners.
     server {
         listen 443 ssl default_server;
         listen [::]:443 ssl default_server;
+        listen 443 quic reuseport;
+        listen [::]:443 quic reuseport;
         ssl_reject_handshake on;
     }
 
@@ -820,8 +827,9 @@ EOF
     server {
         listen 443 ssl;
         listen [::]:443 ssl;
-        listen 443 quic reuseport;
-        listen [::]:443 quic reuseport;
+        # reuseport lives on the reject block above (only once per address:port)
+        listen 443 quic;
+        listen [::]:443 quic;
 
         http2 on;
         http3 on;
