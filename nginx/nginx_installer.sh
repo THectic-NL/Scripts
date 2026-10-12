@@ -1273,6 +1273,9 @@ EOF
     openssl_ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}' || echo "OpenSSL unknown")
     Write-Log INFO "Nginx ${NGINX_VERSION} with ${openssl_ver} (system) installed"
     Write-Log INFO "Access: https://localhost or https://<server-ip> (self-signed certificate for localhost)"
+    if [[ $had_existing_nginx == false ]]; then
+        Write-Log INFO "Add a site: copy one of /etc/nginx/conf.d/*.conf.example to <name>.conf (steps at the top of each file)"
+    fi
     Write-Log INFO "Manage nginx with: systemctl {start|stop|reload|restart|status} nginx"
     /usr/sbin/nginx -V 2>&1 | head -n1 || true
     
