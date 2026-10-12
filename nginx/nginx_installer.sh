@@ -685,20 +685,6 @@ EOF
     chmod 0644 /usr/share/nginx/html/*.html /usr/share/nginx/html/*.css 2>/dev/null || true
 }
 
-# Usage: names=$(Get-ServerNames)  ->  "localhost <short-hostname> <fqdn>"
-# The names the default vhost answers to. The catch-all server refuses every
-# other name (and bare-IP access, which sends no SNI), so without the host's
-# own names the welcome page would only be reachable on the machine itself.
-Get-ServerNames() {
-    local names=(localhost) name
-    for name in "$(hostname -s 2>/dev/null)" "$(hostname -f 2>/dev/null)"; do
-        name=${name,,}
-        [[ $name =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $name != localhost* ]] || continue
-        [[ " ${names[*]} " == *" $name "* ]] || names+=("$name")
-    done
-    echo "${names[*]}"
-}
-
 New-SelfSignedCertificate() {
     Write-Log INFO "Generating self-signed TLS certificate"
     mkdir -p /etc/nginx/ssl
@@ -712,12 +698,6 @@ New-SelfSignedCertificate() {
     ssl_bin=$(command -v openssl || true)
     [[ -n "$ssl_bin" ]] || Stop-Script "openssl not found"
 
-    local san="" name
-    for name in $(Get-ServerNames); do
-        san+="DNS:${name},"
-    done
-    san+="IP:127.0.0.1,IP:::1"
-
     local output
     if ! output=$(OPENSSL_CONF=/dev/null "$ssl_bin" req -x509 -newkey ec \
         -pkeyopt ec_paramgen_curve:secp384r1 \
@@ -725,7 +705,7 @@ New-SelfSignedCertificate() {
         -keyout /etc/nginx/ssl/nginx.key \
         -out /etc/nginx/ssl/nginx.crt \
         -subj '/CN=localhost' \
-        -addext "subjectAltName=${san}" 2>&1); then
+        -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' 2>&1); then
         Write-Log ERROR "OpenSSL output: $output"
         Stop-Script "Certificate generation failed"
     fi
@@ -858,23 +838,6 @@ EOF
     # 0-RTT disabled: no replay attack protection configured at application layer
     ssl_early_data off;
 
-    # Refuse handshakes for names we do not host, instead of serving the
-    # certificate to scanners and SNI probes hitting the bare IP address.
-    # This block must also own the QUIC listeners: a server without a quic
-    # listen directive never takes part in HTTP/3 SNI selection, so an
-    # unknown-SNI QUIC client would fall back to the first server that has
-    # one and still receive its certificate. default_server is explicit on
-    # the quic listeners too, so a server block added above this one cannot
-    # silently take over. reuseport may appear only once per address:port,
-    # so the real server below uses plain quic listeners.
-    server {
-        listen 443 ssl default_server;
-        listen [::]:443 ssl default_server;
-        listen 443 quic reuseport default_server;
-        listen [::]:443 quic reuseport default_server;
-        ssl_reject_handshake on;
-    }
-
     server {
         listen 80;
         listen [::]:80;
@@ -882,21 +845,24 @@ EOF
         return 301 https://$host$request_uri;
     }
 
+    # Catch-all for the bare IP address and every name without its own
+    # server block. It only ever presents the self-signed "localhost"
+    # certificate, so scanners and SNI probes learn neither the hostname nor
+    # the certificate of a real site added later. default_server is explicit
+    # on the quic listeners too: HTTP/3 picks its default separately, and a
+    # quic server block added above this one would otherwise take over.
+    # reuseport may appear only once per address:port, so it lives here and
+    # later server blocks use plain "listen 443 quic".
     server {
-        listen 443 ssl;
-        listen [::]:443 ssl;
-        # reuseport lives on the reject block above (only once per address:port)
-        listen 443 quic;
-        listen [::]:443 quic;
+        listen 443 ssl default_server;
+        listen [::]:443 ssl default_server;
+        listen 443 quic reuseport default_server;
+        listen [::]:443 quic reuseport default_server;
 
         http2 on;
         http3 on;
 
-EOF
-
-    printf '        server_name %s;\n' "$(Get-ServerNames)" >> /etc/nginx/nginx.conf
-
-    cat >> /etc/nginx/nginx.conf <<'EOF'
+        server_name localhost;
 
         ssl_certificate /etc/nginx/ssl/nginx.crt;
         ssl_certificate_key /etc/nginx/ssl/nginx.key;
@@ -1055,13 +1021,7 @@ EOF
     local openssl_ver
     openssl_ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}' || echo "OpenSSL unknown")
     Write-Log INFO "Nginx ${NGINX_VERSION} with ${openssl_ver} (system) installed"
-    if [[ $had_existing_nginx == false ]]; then
-        local name
-        for name in $(Get-ServerNames); do
-            Write-Log INFO "Access: https://${name}"
-        done
-        Write-Log INFO "Other names and plain IP addresses get a TLS alert by design (ssl_reject_handshake)"
-    fi
+    Write-Log INFO "Access: https://localhost or https://<server-ip> (self-signed certificate for localhost)"
     Write-Log INFO "Manage nginx with: systemctl {start|stop|reload|restart|status} nginx"
     /usr/sbin/nginx -V 2>&1 | head -n1 || true
     
