@@ -29,33 +29,44 @@ sudo ./nginx_installer.sh install --skip-modules=acme,zstd,headers-more
 
 ## Adding sites
 
-A fresh install ships ready-to-copy reverse-proxy examples. They end in
-`.example`, so nginx ignores them until you copy one:
+A fresh install ships ready-to-copy examples. They end in `.example`, so
+nginx ignores them until you copy one:
 
 | File | For |
 |------|-----|
-| `conf.d/homeassistant.conf.example` | Home Assistant |
-| `conf.d/jellyfin.conf.example` | Jellyfin |
-| `conf.d/arr.conf.example` | Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr |
-| `conf.d/seerr.conf.example` | Seerr / Jellyseerr / Overseerr |
-| `conf.d/qbittorrent.conf.example` | qBittorrent Web UI |
-| `conf.d/cockpit.conf.example` | Cockpit |
-| `stream.d/minecraft.conf.example` | Plain TCP passthrough (Minecraft) |
+| `conf.d/reverse-proxy.conf.example` | An app behind nginx (HTTP or HTTPS upstream, websockets) |
+| `conf.d/static-site.conf.example` | Static files from `/var/www/<name>` |
+| `stream.d/tcp-passthrough.conf.example` | Forwarding a TCP port unchanged (game servers, SSH) |
 
-Each file lists the settings the app itself needs (trusted proxies, allowed
-origins, ...). Shared proxy settings live in `snippets/proxy.conf`.
+Shared proxy settings live in `snippets/proxy.conf`.
 
 ```bash
 cd /etc/nginx/conf.d
-sudo cp homeassistant.conf.example home.example.com.conf   # then edit the name and upstream
-sudo certbot certonly --webroot -w /var/www/acme -d home.example.com \
+sudo cp reverse-proxy.conf.example app.example.com.conf   # then edit the name and upstream
+sudo certbot certonly --webroot -w /var/www/acme -d app.example.com \
      --deploy-hook "systemctl reload nginx"
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Port 80 answers ACME HTTP-01 challenges from `/var/www/acme` for every name
-and redirects everything else to HTTPS. The bare IP address and names without
-their own site get the self-signed `localhost` certificate, never a real one.
+and redirects everything else to HTTPS. For a wildcard certificate use a
+DNS-01 client instead (for example acme.sh with your DNS provider's API) and
+point both `ssl_certificate` lines at it. The bare IP address and names
+without their own site get the self-signed `localhost` certificate, never a
+real one.
+
+### App-side settings
+
+Behind a reverse proxy, most apps must be told to trust it:
+
+| App | Setting |
+|-----|---------|
+| Home Assistant | `configuration.yaml`: `http:` `use_x_forwarded_for: true` and `trusted_proxies:` with nginx's address, otherwise 400 Bad Request |
+| Jellyfin | Dashboard > Networking > Known proxies |
+| Sonarr, Radarr, Lidarr, Prowlarr, Bazarr | Leave URL Base empty on a subdomain; set Authentication to Forms |
+| Seerr / Jellyseerr / Overseerr | Settings > General > Enable Proxy Support |
+| qBittorrent | Web UI: enable reverse proxy support with nginx as trusted proxy; add the name to Host header validation |
+| Cockpit | `/etc/cockpit/cockpit.conf`: `[WebService]` `Origins = https://<name> wss://<name>`, `ProtocolHeader = X-Forwarded-Proto`; proxy to `https://127.0.0.1:9090` |
 
 ## Installed paths
 
