@@ -52,7 +52,7 @@ sudo systemctl {start|stop|reload|restart|status} nginx
 
 ```bash
 sudo systemctl stop nginx && sudo systemctl disable nginx
-sudo rm -f /etc/systemd/system/nginx.service
+sudo rm -f /etc/systemd/system/nginx.service /etc/modules-load.d/nginx-ktls.conf
 sudo systemctl daemon-reload
 sudo rm -rf /usr/sbin/nginx /etc/nginx /usr/lib64/nginx /usr/share/nginx \
             /var/log/nginx /var/cache/nginx /var/lib/nginx

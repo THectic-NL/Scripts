@@ -685,6 +685,20 @@ EOF
     chmod 0644 /usr/share/nginx/html/*.html /usr/share/nginx/html/*.css 2>/dev/null || true
 }
 
+# Usage: names=$(Get-ServerNames)  ->  "localhost <short-hostname> <fqdn>"
+# The names the default vhost answers to. The catch-all server refuses every
+# other name (and bare-IP access, which sends no SNI), so without the host's
+# own names the welcome page would only be reachable on the machine itself.
+Get-ServerNames() {
+    local names=(localhost) name
+    for name in "$(hostname -s 2>/dev/null)" "$(hostname -f 2>/dev/null)"; do
+        name=${name,,}
+        [[ $name =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $name != localhost* ]] || continue
+        [[ " ${names[*]} " == *" $name "* ]] || names+=("$name")
+    done
+    echo "${names[*]}"
+}
+
 New-SelfSignedCertificate() {
     Write-Log INFO "Generating self-signed TLS certificate"
     mkdir -p /etc/nginx/ssl
@@ -698,6 +712,12 @@ New-SelfSignedCertificate() {
     ssl_bin=$(command -v openssl || true)
     [[ -n "$ssl_bin" ]] || Stop-Script "openssl not found"
 
+    local san="" name
+    for name in $(Get-ServerNames); do
+        san+="DNS:${name},"
+    done
+    san+="IP:127.0.0.1,IP:::1"
+
     local output
     if ! output=$(OPENSSL_CONF=/dev/null "$ssl_bin" req -x509 -newkey ec \
         -pkeyopt ec_paramgen_curve:secp384r1 \
@@ -705,13 +725,25 @@ New-SelfSignedCertificate() {
         -keyout /etc/nginx/ssl/nginx.key \
         -out /etc/nginx/ssl/nginx.crt \
         -subj '/CN=localhost' \
-        -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' 2>&1); then
+        -addext "subjectAltName=${san}" 2>&1); then
         Write-Log ERROR "OpenSSL output: $output"
         Stop-Script "Certificate generation failed"
     fi
     
     chmod 600 /etc/nginx/ssl/nginx.key
     chmod 644 /etc/nginx/ssl/nginx.crt
+}
+
+# kTLS needs the tls kernel module. Load it now and at every boot. A failure
+# only warns: without the module OpenSSL falls back to user-space TLS, and
+# some environments (e.g. LXC containers) cannot load kernel modules at all.
+Enable-Ktls() {
+    echo tls > /etc/modules-load.d/nginx-ktls.conf
+    if modprobe tls 2>/dev/null; then
+        Write-Log INFO "Kernel TLS module loaded (kTLS offload for sendfile)"
+    else
+        Write-Log WARN "Could not load the tls kernel module; nginx uses user-space TLS instead"
+    fi
 }
 
 New-NginxConfig() {
@@ -815,6 +847,11 @@ EOF
     ssl_session_timeout 1d;
     ssl_session_tickets off;
     ssl_buffer_size 4k;
+    # Kernel TLS: the kernel encrypts sendfile() output, so static files no
+    # longer take a detour through user space. Needs the tls kernel module
+    # (loaded by the installer); without it OpenSSL silently uses plain
+    # user-space TLS. Check with: grep TlsCurrTxSw /proc/net/tls_stat
+    ssl_conf_command Options KTLS;
 
     # QUIC configuration
     quic_retry on;
@@ -855,7 +892,11 @@ EOF
         http2 on;
         http3 on;
 
-        server_name localhost;
+EOF
+
+    printf '        server_name %s;\n' "$(Get-ServerNames)" >> /etc/nginx/nginx.conf
+
+    cat >> /etc/nginx/nginx.conf <<'EOF'
 
         ssl_certificate /etc/nginx/ssl/nginx.crt;
         ssl_certificate_key /etc/nginx/ssl/nginx.key;
@@ -969,6 +1010,7 @@ Install-Nginx() {
     New-SelfSignedCertificate
     if [[ $had_existing_nginx == false ]]; then
         New-NginxConfig
+        Enable-Ktls
     else
         Write-Log INFO "Existing nginx.conf preserved"
     fi
@@ -1013,7 +1055,13 @@ EOF
     local openssl_ver
     openssl_ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}' || echo "OpenSSL unknown")
     Write-Log INFO "Nginx ${NGINX_VERSION} with ${openssl_ver} (system) installed"
-    Write-Log INFO "Access: https://localhost"
+    if [[ $had_existing_nginx == false ]]; then
+        local name
+        for name in $(Get-ServerNames); do
+            Write-Log INFO "Access: https://${name}"
+        done
+        Write-Log INFO "Other names and plain IP addresses get a TLS alert by design (ssl_reject_handshake)"
+    fi
     Write-Log INFO "Manage nginx with: systemctl {start|stop|reload|restart|status} nginx"
     /usr/sbin/nginx -V 2>&1 | head -n1 || true
     
@@ -1061,7 +1109,7 @@ Remove-Nginx() {
 
     systemctl stop nginx 2>/dev/null || true
     systemctl disable nginx 2>/dev/null || true
-    rm -f /etc/systemd/system/nginx.service
+    rm -f /etc/systemd/system/nginx.service /etc/modules-load.d/nginx-ktls.conf
     systemctl daemon-reload 2>/dev/null || true
 
     rm -rf \
