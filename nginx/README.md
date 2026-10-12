@@ -1,6 +1,8 @@
 # NGINX Installer
 
-Builds NGINX from source with hardened defaults: OpenSSL 3.x, HTTP/2, HTTP/3 (QUIC), zstd compression, headers-more, and ACME module.
+Builds NGINX from source with hardened defaults: TLS 1.3 only, post-quantum key exchange (X25519MLKEM768), HTTP/2, HTTP/3 (QUIC), zstd compression, headers-more, and ACME module.
+
+Requires the system OpenSSL to be 3.5 or newer (Debian 13, Ubuntu 26.04, current Fedora and Arch). On older systems the installer stops before changing anything.
 
 ```bash
 sudo ./nginx_installer.sh install

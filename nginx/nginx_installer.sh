@@ -6,8 +6,8 @@ set -euo pipefail
 # ============================================================================
 #
 # Description:
-#   Builds and installs NGINX from source against the system OpenSSL,
-#   with HTTP/3, zstd compression, ACME support, and a hardened
+#   Builds and installs NGINX from source against the system OpenSSL
+#   (3.5 or newer), with HTTP/3, zstd compression, ACME support, and a hardened
 #   TLS 1.3-only configuration.
 #
 # Usage:
@@ -356,6 +356,22 @@ Install-Rustup() {
     return 0
 }
 
+# NGINX is built against the system OpenSSL, and the generated config offers
+# the hybrid post-quantum group X25519MLKEM768, which OpenSSL only knows from
+# 3.5 on. Older versions make nginx -t fail, so refuse them up front.
+Test-OpenSsl() {
+    local name="" version="" major minor
+    read -r name version _ < <(openssl version 2>/dev/null) || true
+    [[ $name == OpenSSL && -n $version ]] || Stop-Script "OpenSSL not found; install the openssl package."
+    IFS=. read -r major minor _ <<< "$version"
+    if (( major < 3 || (major == 3 && minor < 5) )); then
+        Write-Log ERROR "This system is too old: OpenSSL ${version} found, 3.5 or newer required."
+        Write-Log INFO "OpenSSL 3.5 ships with Debian 13, Ubuntu 26.04, and current Fedora and Arch."
+        exit 1
+    fi
+    Write-Log INFO "OpenSSL ${version} found"
+}
+
 # ============================================================================
 # System Dependencies
 # ============================================================================
@@ -373,10 +389,10 @@ Install-Dependencies() {
         apt)
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq >/dev/null 2>&1
-            apt-get install -y build-essential libpcre2-dev zlib1g-dev libzstd-dev libssl-dev curl gcc make cargo pkg-config clang gawk cmake >/dev/null 2>&1
+            apt-get install -y build-essential libpcre2-dev zlib1g-dev libzstd-dev libssl-dev openssl curl gcc make cargo pkg-config clang gawk cmake >/dev/null 2>&1
             ;;
         dnf)
-            dnf install -y -q gcc gcc-c++ make pcre2-devel zlib-devel libzstd-devel openssl-devel curl perl cargo pkgconf-pkg-config clang gawk cmake >/dev/null 2>&1
+            dnf install -y -q gcc gcc-c++ make pcre2-devel zlib-devel libzstd-devel openssl-devel openssl curl perl cargo pkgconf-pkg-config clang gawk cmake >/dev/null 2>&1
             ;;
         pacman)
             # -Syu rather than -Sy: partial upgrades break Arch-based systems.
@@ -1174,6 +1190,11 @@ case "$COMMAND" in
             "Run it as a container: podman run -d -p 80:80 docker.io/library/nginx" \
             "distrobox: create a mutable container and build NGINX inside it" \
             "Layer it onto the image: rpm-ostree install nginx"
+        # Fail fast before upgrading anything; checked again once the
+        # dependencies (which include openssl) are installed.
+        if command -v openssl >/dev/null 2>&1; then
+            Test-OpenSsl
+        fi
         Show-Intent "This script will build and install NGINX ${NGINX_VERSION} from source." \
             "Upgrade all system packages" \
             "Install compilers and build dependencies" \
@@ -1183,6 +1204,7 @@ case "$COMMAND" in
         Update-SystemPackages
         Test-RunningWebServers
         Install-Dependencies
+        Test-OpenSsl
         Get-Sources
         Build-Nginx
         Install-Nginx
