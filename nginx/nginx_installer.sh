@@ -6,8 +6,9 @@ set -euo pipefail
 # ============================================================================
 #
 # Description:
-#   Builds and installs NGINX with OpenSSL, HTTP/3, zstd compression,
-#   and ACME support on Linux.
+#   Builds and installs NGINX from source against the system OpenSSL
+#   (3.5 or newer), with HTTP/3, zstd compression, ACME support, and a hardened
+#   TLS 1.3-only configuration.
 #
 # Usage:
 #   ./nginx_installer.sh install [options]   - Build and install NGINX
@@ -355,6 +356,22 @@ Install-Rustup() {
     return 0
 }
 
+# NGINX is built against the system OpenSSL, and the generated config offers
+# the hybrid post-quantum group X25519MLKEM768, which OpenSSL only knows from
+# 3.5 on. Older versions make nginx -t fail, so refuse them up front.
+Test-OpenSsl() {
+    local name="" version="" major minor
+    read -r name version _ < <(openssl version 2>/dev/null) || true
+    [[ $name == OpenSSL && -n $version ]] || Stop-Script "OpenSSL not found; install the openssl package."
+    IFS=. read -r major minor _ <<< "$version"
+    if (( major < 3 || (major == 3 && minor < 5) )); then
+        Write-Log ERROR "This system is too old: OpenSSL ${version} found, 3.5 or newer required."
+        Write-Log INFO "OpenSSL 3.5 ships with Debian 13, Ubuntu 26.04, and current Fedora and Arch."
+        exit 1
+    fi
+    Write-Log INFO "OpenSSL ${version} found"
+}
+
 # ============================================================================
 # System Dependencies
 # ============================================================================
@@ -372,10 +389,10 @@ Install-Dependencies() {
         apt)
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq >/dev/null 2>&1
-            apt-get install -y build-essential libpcre2-dev zlib1g-dev libzstd-dev libssl-dev curl gcc make cargo pkg-config clang gawk cmake >/dev/null 2>&1
+            apt-get install -y build-essential libpcre2-dev zlib1g-dev libzstd-dev libssl-dev openssl curl gcc make cargo pkg-config clang gawk cmake >/dev/null 2>&1
             ;;
         dnf)
-            dnf install -y -q gcc gcc-c++ make pcre2-devel zlib-devel libzstd-devel openssl-devel curl perl cargo pkgconf-pkg-config clang gawk cmake >/dev/null 2>&1
+            dnf install -y -q gcc gcc-c++ make pcre2-devel zlib-devel libzstd-devel openssl-devel openssl curl perl cargo pkgconf-pkg-config clang gawk cmake >/dev/null 2>&1
             ;;
         pacman)
             # -Syu rather than -Sy: partial upgrades break Arch-based systems.
@@ -459,7 +476,7 @@ Get-Sources() {
     Write-Log INFO "Extracting archives"
 
     # Clean previous extractions
-    rm -rf nginx openssl pcre2 zlib headers-more zstd-module nginx-acme 2>/dev/null || true
+    rm -rf nginx pcre2 zlib headers-more zstd-module nginx-acme 2>/dev/null || true
 
     tar xzf nginx.tgz && mv "nginx-${NGINX_VERSION}" nginx
     tar xzf pcre2.tgz && mv "pcre2-${PCRE2_VERSION}" pcre2
@@ -547,6 +564,12 @@ Build-Nginx() {
         --with-stream_realip_module
         --with-file-aio
         --with-threads
+        # Hardening flags. -U first: Ubuntu's gcc already defines
+        # _FORTIFY_SOURCE=3, and a bare -D=2 would lower it. glibc falls back
+        # to level 2 by itself on toolchains that do not support 3. PIE is
+        # already the default on every supported distro; full RELRO is not.
+        --with-cc-opt='-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection'
+        --with-ld-opt='-Wl,-z,relro -Wl,-z,now'
         --modules-path="${NGINX_MODULES_PATH}"
     )
     [[ $SKIP_HEADERS_MORE == true ]] || configure_args+=(--add-dynamic-module="$BUILD_DIR/headers-more")
@@ -691,6 +714,18 @@ New-SelfSignedCertificate() {
     chmod 644 /etc/nginx/ssl/nginx.crt
 }
 
+# kTLS needs the tls kernel module. Load it now and at every boot. A failure
+# only warns: without the module OpenSSL falls back to user-space TLS, and
+# some environments (e.g. LXC containers) cannot load kernel modules at all.
+Enable-Ktls() {
+    echo tls > /etc/modules-load.d/nginx-ktls.conf
+    if modprobe tls 2>/dev/null; then
+        Write-Log INFO "Kernel TLS module loaded (kTLS offload for sendfile)"
+    else
+        Write-Log WARN "Could not load the tls kernel module; nginx uses user-space TLS instead"
+    fi
+}
+
 New-NginxConfig() {
     Write-Log INFO "Creating nginx configuration"
 
@@ -717,11 +752,13 @@ EOF
 
 user nginx;
 worker_processes auto;
+worker_rlimit_nofile 65535;
 error_log /var/log/nginx/error.log warn;
 pid /run/nginx.pid;
 
 events {
     worker_connections 1024;
+    multi_accept on;
 }
 
 http {
@@ -733,7 +770,7 @@ EOF
 
     if [[ $SKIP_HEADERS_MORE != true ]]; then
         cat >> /etc/nginx/nginx.conf <<'EOF'
-    more_set_headers 'Server: nginx';
+    more_clear_headers 'Server';
 EOF
     fi
 
@@ -751,6 +788,9 @@ EOF
     keepalive_timeout  65;
     types_hash_max_size 4096;
     types_hash_bucket_size 128;
+
+    # nginx defaults to 1m, which breaks uploads (e.g. *arr imports)
+    client_max_body_size 16m;
 
     # Gzip compression
     gzip  on;
@@ -774,35 +814,71 @@ EOF
 
     cat >> /etc/nginx/nginx.conf <<'EOF'
 
-    # SSL/TLS configuration
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
-    # TLS 1.2 ciphers — ECDSA-only (matches the ECDSA certificate generated below).
-    # TLS 1.3 ciphers are built-in and always secure; no need to list them.
-    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256;
+    # SSL/TLS configuration — TLS 1.3 only.
+    # ssl_ciphers only applies to TLS 1.2 and below, which are refused here
+    # (Windows 10 Schannel, Android 8 and older cannot connect).
+    ssl_protocols TLSv1.3;
+    # Only the 256-bit TLS 1.3 suites. RFC 8446 makes TLS_AES_128_GCM_SHA256
+    # mandatory to implement, but every mainstream client also speaks
+    # AES-256-GCM or ChaCha20, and dropping it gives full marks for cipher
+    # strength in SSL Labs-style ratings. QUIC is unaffected: its Initial
+    # packets always use AES-128-GCM, independent of this list.
+    ssl_conf_command Ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
+    # Hybrid post-quantum group first, then X25519. Keep the NIST curves:
+    # RFC 8446 makes secp256r1 the mandatory group (X25519 is only a SHOULD),
+    # and FIPS-mode or embedded clients may offer nothing else.
     ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
     ssl_buffer_size 4k;
+    # Kernel TLS: the kernel encrypts sendfile() output, so static files no
+    # longer take a detour through user space. Needs the tls kernel module
+    # (loaded by the installer); without it OpenSSL silently uses plain
+    # user-space TLS. Check with: grep TlsCurrTxSw /proc/net/tls_stat
+    ssl_conf_command Options KTLS;
 
     # QUIC configuration
     quic_retry on;
     # 0-RTT disabled: no replay attack protection configured at application layer
     ssl_early_data off;
 
-    server {
-        listen 80;
-        listen [::]:80;
-        server_name _;
-        return 301 https://$host$request_uri;
+    # WebSocket upgrade for reverse proxies (used by snippets/proxy.conf):
+    # "upgrade" when the client asks for it, otherwise close.
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
     }
 
+    # Port 80 for every name: answer ACME HTTP-01 challenges (certbot
+    # certonly --webroot -w /var/www/acme -d <name>), redirect the rest.
     server {
-        listen 443 ssl;
-        listen [::]:443 ssl;
-        listen 443 quic reuseport;
-        listen [::]:443 quic reuseport;
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        server_name _;
+
+        location /.well-known/acme-challenge/ {
+            root /var/www/acme;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+
+    # Catch-all for the bare IP address and every name without its own
+    # server block. It only ever presents the self-signed "localhost"
+    # certificate, so scanners and SNI probes learn neither the hostname nor
+    # the certificate of a real site added later. default_server is explicit
+    # on the quic listeners too: HTTP/3 picks its default separately, and a
+    # quic server block added above this one would otherwise take over.
+    # reuseport may appear only once per address:port, so it lives here and
+    # later server blocks use plain "listen 443 quic".
+    server {
+        listen 443 ssl default_server;
+        listen [::]:443 ssl default_server;
+        listen 443 quic reuseport default_server;
+        listen [::]:443 quic reuseport default_server;
 
         http2 on;
         http3 on;
@@ -816,7 +892,6 @@ EOF
         add_header X-Protocol $server_protocol always;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
         add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "DENY" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none';" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
@@ -832,8 +907,149 @@ EOF
             root   /usr/share/nginx/html;
         }
     }
+
+    # One file per site. Examples: /etc/nginx/conf.d/*.conf.example
+    include /etc/nginx/conf.d/*.conf;
+}
+
+# TCP/UDP passthrough (game servers, SSH, ...): one file per service.
+stream {
+    include /etc/nginx/stream.d/*.conf;
 }
 EOF
+}
+
+# Usage: Write-VhostHead <name> <file>
+# Appends the part every example site shares: listeners (TCP + QUIC, no
+# reuseport: that lives on the default server), certificate, headers.
+Write-VhostHead() {
+    local name=$1 file=$2
+    cat >> "$file" <<EOF
+#
+# Activate: copy to ${name}.conf (the .example suffix keeps it inactive),
+# replace ${name}, then get a certificate, for example:
+#   certbot certonly --webroot -w /var/www/acme -d ${name} \\
+#       --deploy-hook "systemctl reload nginx"
+# With a wildcard certificate (DNS-01), point both ssl_ lines at that one.
+#   nginx -t && systemctl reload nginx
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    listen 443 quic;
+    listen [::]:443 quic;
+
+    http2 on;
+    http3 on;
+
+    server_name ${name};
+
+    ssl_certificate     /etc/letsencrypt/live/${name}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${name}/privkey.pem;
+
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+EOF
+}
+
+# Writes snippets/proxy.conf and the example sites in conf.d/ and stream.d/.
+# Examples end in .example, so the *.conf includes skip them until copied.
+New-VhostExamples() {
+    Write-Log INFO "Writing reverse-proxy snippet and example sites"
+    mkdir -p /etc/nginx/snippets /etc/nginx/conf.d /etc/nginx/stream.d /var/www/acme
+
+    cat > /etc/nginx/snippets/proxy.conf <<'EOF'
+# Shared reverse-proxy settings. Include inside a location block:
+#   include /etc/nginx/snippets/proxy.conf;
+# Timeouts and buffering differ per app, so each site sets those itself.
+proxy_http_version 1.1;
+
+proxy_set_header Host              $host;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+
+# WebSockets
+proxy_set_header Upgrade    $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+
+# Leave compression to the app. Compressing proxied streams, server-sent
+# events and websockets has crashed nginx workers with the zstd module, and
+# most apps compress their own responses anyway.
+gzip off;
+EOF
+    if [[ $SKIP_ZSTD != true ]]; then
+        echo 'zstd off;' >> /etc/nginx/snippets/proxy.conf
+    fi
+
+    local f
+
+    f=/etc/nginx/conf.d/reverse-proxy.conf.example
+    cat > "$f" <<'EOF'
+# Reverse proxy to an app on this machine or on the LAN.
+#
+# Most apps must also trust the proxy, or they see every visitor as nginx's
+# address and some refuse the request outright. Look for a setting such as
+# "trusted proxies" or "known proxies" and add the address nginx connects
+# from. The nginx README in the Scripts repository lists common apps.
+EOF
+    Write-VhostHead app.example.com "$f"
+    cat >> "$f" <<'EOF'
+    # Larger uploads than the 16m default, if the app needs them
+    #client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        # An app that serves TLS itself:
+        #proxy_pass https://127.0.0.1:9090;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # Streams, live updates and websockets pass through unbuffered
+        proxy_buffering off;
+        # Long-lived websockets (dashboards, terminals) idle longer than 60s
+        #proxy_read_timeout 1h;
+        #proxy_send_timeout 1h;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/static-site.conf.example
+    cat > "$f" <<'EOF'
+# Static site served from /var/www/<name>.
+EOF
+    Write-VhostHead www.example.com "$f"
+    cat >> "$f" <<'EOF'
+    root /var/www/www.example.com;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+EOF
+
+    cat > /etc/nginx/stream.d/tcp-passthrough.conf.example <<'EOF'
+# TCP passthrough: forwards a port unchanged, without TLS or HTTP
+# (game servers, SSH, ...). Example: a Minecraft server on the LAN.
+# Activate: copy to <name>.conf, set the port and upstream, open the port.
+
+upstream tcp_backend {
+    server 192.168.0.10:25565;
+}
+
+server {
+    listen 25565;
+    listen [::]:25565;
+    proxy_pass tcp_backend;
+}
+EOF
+
+    chmod 0644 /etc/nginx/snippets/proxy.conf /etc/nginx/conf.d/*.example /etc/nginx/stream.d/*.example
 }
 
 # ============================================================================
@@ -922,6 +1138,8 @@ Install-Nginx() {
     New-SelfSignedCertificate
     if [[ $had_existing_nginx == false ]]; then
         New-NginxConfig
+        New-VhostExamples
+        Enable-Ktls
     else
         Write-Log INFO "Existing nginx.conf preserved"
     fi
@@ -961,12 +1179,16 @@ EOF
     if ! /usr/sbin/nginx -t; then
         Stop-Script "nginx configuration test failed — check the error above"
     fi
-    systemctl start nginx || Stop-Script "Failed to start nginx service"
+    # restart rather than start: on a rebuild the old binary is still running
+    systemctl restart nginx || Stop-Script "Failed to start nginx service"
     
     local openssl_ver
     openssl_ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}' || echo "OpenSSL unknown")
     Write-Log INFO "Nginx ${NGINX_VERSION} with ${openssl_ver} (system) installed"
-    Write-Log INFO "Access: https://localhost"
+    Write-Log INFO "Access: https://localhost or https://<server-ip> (self-signed certificate for localhost)"
+    if [[ $had_existing_nginx == false ]]; then
+        Write-Log INFO "Add a site: copy one of /etc/nginx/conf.d/*.conf.example to <name>.conf (steps at the top of each file)"
+    fi
     Write-Log INFO "Manage nginx with: systemctl {start|stop|reload|restart|status} nginx"
     /usr/sbin/nginx -V 2>&1 | head -n1 || true
     
@@ -1014,7 +1236,7 @@ Remove-Nginx() {
 
     systemctl stop nginx 2>/dev/null || true
     systemctl disable nginx 2>/dev/null || true
-    rm -f /etc/systemd/system/nginx.service
+    rm -f /etc/systemd/system/nginx.service /etc/modules-load.d/nginx-ktls.conf
     systemctl daemon-reload 2>/dev/null || true
 
     rm -rf \
@@ -1023,6 +1245,7 @@ Remove-Nginx() {
         /var/log/nginx \
         /var/cache/nginx \
         /var/lib/nginx \
+        /var/www/acme \
         "${NGINX_PREFIX}" \
         "${NGINX_LIBDIR}/nginx"
     userdel nginx 2>/dev/null || true
@@ -1056,6 +1279,12 @@ Test-RunningWebServers() {
         if [[ -n "$pid" ]]; then
             local proc
             proc=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            # A running NGINX keeps serving during the build and is
+            # restarted with the new binary at the end.
+            if [[ $proc == nginx ]]; then
+                Write-Log INFO "Port $port in use by nginx; it keeps running until the restart"
+                continue
+            fi
             ports_in_use+=("$port ($proc)")
             Write-Log WARN "Port $port in use by: $proc"
         fi
@@ -1137,21 +1366,34 @@ done
 
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+# Check for root before anything logs: the log file lives in /var/log, and a
+# failed write there would end the script with a bare "Permission denied".
+if [[ $COMMAND == install || $COMMAND == remove ]] && [[ $EUID -ne 0 ]]; then
+    LOG_FILE=""
+    Test-Root
+fi
+
 case "$COMMAND" in
     install)
         Test-MutableOs "NGINX" \
             "Run it as a container: podman run -d -p 80:80 docker.io/library/nginx" \
             "distrobox: create a mutable container and build NGINX inside it" \
             "Layer it onto the image: rpm-ostree install nginx"
+        # Fail fast before upgrading anything; checked again once the
+        # dependencies (which include openssl) are installed.
+        if command -v openssl >/dev/null 2>&1; then
+            Test-OpenSsl
+        fi
         Show-Intent "This script will build and install NGINX ${NGINX_VERSION} from source." \
             "Upgrade all system packages" \
             "Install compilers and build dependencies" \
             "Download and verify the NGINX sources and modules" \
             "Compile NGINX, which takes several minutes" \
-            "Install it and replace an existing NGINX configuration"
+            "Install it, preserving an existing NGINX configuration"
         Update-SystemPackages
         Test-RunningWebServers
         Install-Dependencies
+        Test-OpenSsl
         Get-Sources
         Build-Nginx
         Install-Nginx

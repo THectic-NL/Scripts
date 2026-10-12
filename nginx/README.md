@@ -1,6 +1,8 @@
 # NGINX Installer
 
-Builds NGINX from source with hardened defaults: OpenSSL 3.x, HTTP/2, HTTP/3 (QUIC), zstd compression, headers-more, and ACME module.
+Builds NGINX from source with hardened defaults: TLS 1.3 only, post-quantum key exchange (X25519MLKEM768), HTTP/2, HTTP/3 (QUIC), zstd compression, headers-more, and ACME module.
+
+Requires the system OpenSSL to be 3.5 or newer (Debian 13, Ubuntu 26.04, current Fedora and Arch). On older systems the installer stops before changing anything.
 
 ```bash
 sudo ./nginx_installer.sh install
@@ -25,6 +27,47 @@ sudo ./nginx_installer.sh install --skip-modules=acme,zstd,headers-more
 | `--skip-headers-more` | headers-more module |
 | `--skip-modules=a,b,c` | Any combination of `acme`, `zstd`, `headers-more` |
 
+## Adding sites
+
+A fresh install ships ready-to-copy examples. They end in `.example`, so
+nginx ignores them until you copy one:
+
+| File | For |
+|------|-----|
+| `conf.d/reverse-proxy.conf.example` | An app behind nginx (HTTP or HTTPS upstream, websockets) |
+| `conf.d/static-site.conf.example` | Static files from `/var/www/<name>` |
+| `stream.d/tcp-passthrough.conf.example` | Forwarding a TCP port unchanged (game servers, SSH) |
+
+Shared proxy settings live in `snippets/proxy.conf`.
+
+```bash
+cd /etc/nginx/conf.d
+sudo cp reverse-proxy.conf.example app.example.com.conf   # then edit the name and upstream
+sudo certbot certonly --webroot -w /var/www/acme -d app.example.com \
+     --deploy-hook "systemctl reload nginx"
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Port 80 answers ACME HTTP-01 challenges from `/var/www/acme` for every name
+and redirects everything else to HTTPS. For a wildcard certificate use a
+DNS-01 client instead (for example acme.sh with your DNS provider's API) and
+point both `ssl_certificate` lines at it. The bare IP address and names
+without their own site get the self-signed `localhost` certificate, never a
+real one.
+
+### App-side settings
+
+Behind a reverse proxy, most apps must be told to trust it:
+
+| App | Setting |
+|-----|---------|
+| Home Assistant | `configuration.yaml`: `http:` `use_x_forwarded_for: true` and `trusted_proxies:` with nginx's address, otherwise 400 Bad Request |
+| Jellyfin | Dashboard > Networking > Known proxies |
+| Sonarr, Radarr, Lidarr, Prowlarr, Bazarr | Leave URL Base empty on a subdomain; set Authentication to Forms |
+| Seerr / Jellyseerr / Overseerr | Settings > General > Enable Proxy Support |
+| qBittorrent | Web UI: enable reverse proxy support with nginx as trusted proxy; add the name to Host header validation |
+| Cockpit | `/etc/cockpit/cockpit.conf`: `[WebService]` `Origins = https://<name> wss://<name>`, `ProtocolHeader = X-Forwarded-Proto`; proxy to `https://127.0.0.1:9090` |
+
 ## Installed paths
 
 | Path | Purpose |
@@ -32,6 +75,10 @@ sudo ./nginx_installer.sh install --skip-modules=acme,zstd,headers-more
 | `/usr/sbin/nginx` | Binary |
 | `/etc/nginx/nginx.conf` | Main config |
 | `/etc/nginx/ssl/` | TLS certificates |
+| `/etc/nginx/conf.d/` | One file per site (`*.conf`), plus the `*.conf.example` files |
+| `/etc/nginx/stream.d/` | TCP/UDP passthrough (`*.conf`) |
+| `/etc/nginx/snippets/proxy.conf` | Shared reverse-proxy settings |
+| `/var/www/acme/` | ACME HTTP-01 challenge webroot |
 | `/etc/nginx/modules` | Symlink → `/usr/lib64/nginx/modules` |
 | `/usr/lib64/nginx/modules/` | Dynamic modules |
 | `/usr/share/nginx/html/` | Default web root |
@@ -50,10 +97,10 @@ sudo systemctl {start|stop|reload|restart|status} nginx
 
 ```bash
 sudo systemctl stop nginx && sudo systemctl disable nginx
-sudo rm -f /etc/systemd/system/nginx.service
+sudo rm -f /etc/systemd/system/nginx.service /etc/modules-load.d/nginx-ktls.conf
 sudo systemctl daemon-reload
 sudo rm -rf /usr/sbin/nginx /etc/nginx /usr/lib64/nginx /usr/share/nginx \
-            /var/log/nginx /var/cache/nginx /var/lib/nginx
+            /var/log/nginx /var/cache/nginx /var/lib/nginx /var/www/acme
 sudo userdel nginx
 ```
 
