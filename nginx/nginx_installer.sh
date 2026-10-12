@@ -815,10 +815,15 @@ EOF
     cat >> /etc/nginx/nginx.conf <<'EOF'
 
     # SSL/TLS configuration — TLS 1.3 only.
-    # TLS 1.3 suites are AEAD-only and secure by default; ssl_ciphers only
-    # applies to TLS 1.2 and below, which are refused here (clients older
-    # than ~2018 cannot connect).
+    # ssl_ciphers only applies to TLS 1.2 and below, which are refused here
+    # (Windows 10 Schannel, Android 8 and older cannot connect).
     ssl_protocols TLSv1.3;
+    # Only the 256-bit TLS 1.3 suites. RFC 8446 makes TLS_AES_128_GCM_SHA256
+    # mandatory to implement, but every mainstream client also speaks
+    # AES-256-GCM or ChaCha20, and dropping it gives full marks for cipher
+    # strength in SSL Labs-style ratings. QUIC is unaffected: its Initial
+    # packets always use AES-128-GCM, independent of this list.
+    ssl_conf_command Ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
     # Hybrid post-quantum group first, then X25519. Keep the NIST curves:
     # RFC 8446 makes secp256r1 the mandatory group (X25519 is only a SHOULD),
     # and FIPS-mode or embedded clients may offer nothing else.
