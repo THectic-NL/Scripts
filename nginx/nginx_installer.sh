@@ -1267,7 +1267,8 @@ EOF
     if ! /usr/sbin/nginx -t; then
         Stop-Script "nginx configuration test failed — check the error above"
     fi
-    systemctl start nginx || Stop-Script "Failed to start nginx service"
+    # restart rather than start: on a rebuild the old binary is still running
+    systemctl restart nginx || Stop-Script "Failed to start nginx service"
     
     local openssl_ver
     openssl_ver=$(openssl version 2>/dev/null | awk '{print $1" "$2}' || echo "OpenSSL unknown")
@@ -1366,6 +1367,13 @@ Test-RunningWebServers() {
         if [[ -n "$pid" ]]; then
             local proc
             proc=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            # The NGINX this script installed earlier (its unit lives in
+            # /etc/systemd/system; a distro package uses /lib/systemd) keeps
+            # serving during the rebuild and is restarted at the end.
+            if [[ $proc == nginx && -f /etc/systemd/system/nginx.service ]]; then
+                Write-Log INFO "Port $port in use by the NGINX this script installed; it keeps running until the restart"
+                continue
+            fi
             ports_in_use+=("$port ($proc)")
             Write-Log WARN "Port $port in use by: $proc"
         fi
@@ -1446,6 +1454,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 trap 'rm -rf "$BUILD_DIR"' EXIT
+
+# Check for root before anything logs: the log file lives in /var/log, and a
+# failed write there would end the script with a bare "Permission denied".
+if [[ $COMMAND == install || $COMMAND == remove ]] && [[ $EUID -ne 0 ]]; then
+    LOG_FILE=""
+    Test-Root
+fi
 
 case "$COMMAND" in
     install)
