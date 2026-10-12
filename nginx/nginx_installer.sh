@@ -548,7 +548,12 @@ Build-Nginx() {
         --with-stream_realip_module
         --with-file-aio
         --with-threads
-        --with-cc-opt='-O2 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIC'
+        # Hardening flags. -U first: Ubuntu's gcc already defines
+        # _FORTIFY_SOURCE=3, and a bare -D=2 would lower it. glibc falls back
+        # to level 2 by itself on toolchains that do not support 3. PIE is
+        # already the default on every supported distro; full RELRO is not.
+        --with-cc-opt='-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection'
+        --with-ld-opt='-Wl,-z,relro -Wl,-z,now'
         --modules-path="${NGINX_MODULES_PATH}"
     )
     [[ $SKIP_HEADERS_MORE == true ]] || configure_args+=(--add-dynamic-module="$BUILD_DIR/headers-more")
@@ -786,12 +791,10 @@ EOF
     # applies to TLS 1.2 and below, which are refused here (clients older
     # than ~2018 cannot connect).
     ssl_protocols TLSv1.3;
-    # X25519-only groups: every TLS 1.3 client supports plain X25519, so the
-    # legacy prime256v1/secp384r1 entries are never negotiated — drop them.
-    ssl_ecdh_curve X25519MLKEM768:X25519;
-    # Kernel TLS offload: keeps sendfile working under TLS (OpenSSL 3.x
-    # built with kTLS + kernel 5.2+). Remove this line if nginx -t rejects it.
-    ssl_conf_command Options KTLS;
+    # Hybrid post-quantum group first, then X25519. Keep the NIST curves:
+    # RFC 8446 makes secp256r1 the mandatory group (X25519 is only a SHOULD),
+    # and FIPS-mode or embedded clients may offer nothing else.
+    ssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
@@ -807,13 +810,15 @@ EOF
     # This block must also own the QUIC listeners: a server without a quic
     # listen directive never takes part in HTTP/3 SNI selection, so an
     # unknown-SNI QUIC client would fall back to the first server that has
-    # one and still receive its certificate. reuseport may appear only once
-    # per address:port, so the real server below uses plain quic listeners.
+    # one and still receive its certificate. default_server is explicit on
+    # the quic listeners too, so a server block added above this one cannot
+    # silently take over. reuseport may appear only once per address:port,
+    # so the real server below uses plain quic listeners.
     server {
         listen 443 ssl default_server;
         listen [::]:443 ssl default_server;
-        listen 443 quic reuseport;
-        listen [::]:443 quic reuseport;
+        listen 443 quic reuseport default_server;
+        listen [::]:443 quic reuseport default_server;
         ssl_reject_handshake on;
     }
 
