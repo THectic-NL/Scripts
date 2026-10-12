@@ -1367,11 +1367,10 @@ Test-RunningWebServers() {
         if [[ -n "$pid" ]]; then
             local proc
             proc=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
-            # The NGINX this script installed earlier (its unit lives in
-            # /etc/systemd/system; a distro package uses /lib/systemd) keeps
-            # serving during the rebuild and is restarted at the end.
-            if [[ $proc == nginx && -f /etc/systemd/system/nginx.service ]]; then
-                Write-Log INFO "Port $port in use by the NGINX this script installed; it keeps running until the restart"
+            # A running NGINX keeps serving during the build and is
+            # restarted with the new binary at the end.
+            if [[ $proc == nginx ]]; then
+                Write-Log INFO "Port $port in use by nginx; it keeps running until the restart"
                 continue
             fi
             ports_in_use+=("$port ($proc)")
