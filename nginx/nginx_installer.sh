@@ -838,11 +838,27 @@ EOF
     # 0-RTT disabled: no replay attack protection configured at application layer
     ssl_early_data off;
 
+    # WebSocket upgrade for reverse proxies (used by snippets/proxy.conf):
+    # "upgrade" when the client asks for it, otherwise close.
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+
+    # Port 80 for every name: answer ACME HTTP-01 challenges (certbot
+    # certonly --webroot -w /var/www/acme -d <name>), redirect the rest.
     server {
-        listen 80;
-        listen [::]:80;
+        listen 80 default_server;
+        listen [::]:80 default_server;
         server_name _;
-        return 301 https://$host$request_uri;
+
+        location /.well-known/acme-challenge/ {
+            root /var/www/acme;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
     }
 
     # Catch-all for the bare IP address and every name without its own
@@ -886,8 +902,242 @@ EOF
             root   /usr/share/nginx/html;
         }
     }
+
+    # One file per site. Examples: /etc/nginx/conf.d/*.conf.example
+    include /etc/nginx/conf.d/*.conf;
+}
+
+# TCP/UDP passthrough (game servers, SSH, ...): one file per service.
+stream {
+    include /etc/nginx/stream.d/*.conf;
 }
 EOF
+}
+
+# Usage: Write-VhostHead <name> <file>
+# Appends the part every example site shares: listeners (TCP + QUIC, no
+# reuseport: that lives on the default server), certificate, headers.
+Write-VhostHead() {
+    local name=$1 file=$2
+    cat >> "$file" <<EOF
+#
+# Activate: copy to ${name}.conf (the .example suffix keeps it inactive),
+# replace ${name} and the upstream address, then get a certificate:
+#   certbot certonly --webroot -w /var/www/acme -d ${name} \\
+#       --deploy-hook "systemctl reload nginx"
+#   nginx -t && systemctl reload nginx
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    listen 443 quic;
+    listen [::]:443 quic;
+
+    http2 on;
+    http3 on;
+
+    server_name ${name};
+
+    ssl_certificate     /etc/letsencrypt/live/${name}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${name}/privkey.pem;
+
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+EOF
+}
+
+# Writes snippets/proxy.conf and the example sites in conf.d/ and stream.d/.
+# Examples end in .example, so the *.conf includes skip them until copied.
+New-VhostExamples() {
+    Write-Log INFO "Writing reverse-proxy snippet and example sites"
+    mkdir -p /etc/nginx/snippets /etc/nginx/conf.d /etc/nginx/stream.d /var/www/acme
+
+    cat > /etc/nginx/snippets/proxy.conf <<'EOF'
+# Shared reverse-proxy settings. Include inside a location block:
+#   include /etc/nginx/snippets/proxy.conf;
+# Timeouts and buffering differ per app, so each site sets those itself.
+proxy_http_version 1.1;
+
+proxy_set_header Host              $host;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+
+# WebSockets (Home Assistant, *arr, Jellyfin, Cockpit, ...)
+proxy_set_header Upgrade    $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+
+# Leave compression to the app. Compressing proxied streams, server-sent
+# events and websockets has crashed nginx workers with the zstd module, and
+# most apps compress their own responses anyway.
+gzip off;
+EOF
+    if [[ $SKIP_ZSTD != true ]]; then
+        echo 'zstd off;' >> /etc/nginx/snippets/proxy.conf
+    fi
+
+    local f
+
+    f=/etc/nginx/conf.d/homeassistant.conf.example
+    cat > "$f" <<'EOF'
+# Home Assistant
+#
+# Home Assistant answers proxied requests with 400 Bad Request until it
+# trusts nginx. In configuration.yaml, then restart Home Assistant:
+#   http:
+#     use_x_forwarded_for: true
+#     trusted_proxies:
+#       - 127.0.0.1   # the address nginx connects from (its LAN IP if HA runs elsewhere)
+EOF
+    Write-VhostHead home.example.com "$f"
+    cat >> "$f" <<'EOF'
+    # Backups and media uploads
+    client_max_body_size 50M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8123;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # The frontend keeps one websocket open for the whole session
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/jellyfin.conf.example
+    cat > "$f" <<'EOF'
+# Jellyfin
+#
+# In Jellyfin: Dashboard > Networking > Known proxies, add the address nginx
+# connects from. Otherwise every client shows up as nginx's IP.
+EOF
+    Write-VhostHead jellyfin.example.com "$f"
+    cat >> "$f" <<'EOF'
+    client_max_body_size 20M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8096;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # Streams and the /socket websocket: pass through unbuffered
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/arr.conf.example
+    cat > "$f" <<'EOF'
+# Sonarr, Radarr, Lidarr, Readarr, Prowlarr, Bazarr: one file per app.
+# Default ports: Sonarr 8989, Radarr 7878, Lidarr 8686, Readarr 8787,
+#                Prowlarr 9696, Bazarr 6767.
+#
+# In the app: leave "URL Base" empty (the app gets its own name) and set
+# Authentication to "Forms" before exposing it.
+EOF
+    Write-VhostHead sonarr.example.com "$f"
+    cat >> "$f" <<'EOF'
+    location / {
+        proxy_pass http://127.0.0.1:8989;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # Live UI updates arrive over a websocket
+        proxy_buffering off;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/seerr.conf.example
+    cat > "$f" <<'EOF'
+# Seerr / Jellyseerr / Overseerr
+#
+# In Seerr: Settings > General > "Enable Proxy Support", so it reads the
+# client IP from X-Forwarded-For.
+EOF
+    Write-VhostHead requests.example.com "$f"
+    cat >> "$f" <<'EOF'
+    location / {
+        proxy_pass http://127.0.0.1:5055;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_buffering off;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/qbittorrent.conf.example
+    cat > "$f" <<'EOF'
+# qBittorrent Web UI
+#
+# In qBittorrent: Options > Web UI
+#   - "Enable reverse proxy support", trusted proxies: 127.0.0.1
+#   - with "Host header validation" on, add qbittorrent.example.com to the
+#     server domains
+#   - keep cross-site request forgery protection on
+EOF
+    Write-VhostHead qbittorrent.example.com "$f"
+    cat >> "$f" <<'EOF'
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_buffering off;
+    }
+}
+EOF
+
+    f=/etc/nginx/conf.d/cockpit.conf.example
+    cat > "$f" <<'EOF'
+# Cockpit (server admin console)
+#
+# Cockpit refuses logins from origins it does not know. In
+# /etc/cockpit/cockpit.conf, then: systemctl restart cockpit
+#   [WebService]
+#   Origins = https://admin.example.com wss://admin.example.com
+#   ProtocolHeader = X-Forwarded-Proto
+#
+# Think twice before exposing an admin console; to limit it to your LAN,
+# add inside the server block:  allow 192.168.0.0/16;  deny all;
+EOF
+    Write-VhostHead admin.example.com "$f"
+    cat >> "$f" <<'EOF'
+    # File uploads through the Navigator plugin
+    client_max_body_size 100M;
+
+    location / {
+        # Cockpit serves TLS itself, even on localhost
+        proxy_pass https://127.0.0.1:9090;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # Terminal sessions stay open for a long time
+        proxy_buffering off;
+        proxy_read_timeout 2h;
+        proxy_send_timeout 2h;
+    }
+}
+EOF
+
+    cat > /etc/nginx/stream.d/minecraft.conf.example <<'EOF'
+# Minecraft (Java edition): plain TCP passthrough, no TLS or HTTP involved.
+# Activate: copy to minecraft.conf, set the server address, open port 25565.
+
+upstream minecraft {
+    server 192.168.0.10:25565;
+}
+
+server {
+    listen 25565;
+    listen [::]:25565;
+    proxy_pass minecraft;
+}
+EOF
+
+    chmod 0644 /etc/nginx/snippets/proxy.conf /etc/nginx/conf.d/*.example /etc/nginx/stream.d/*.example
 }
 
 # ============================================================================
@@ -976,6 +1226,7 @@ Install-Nginx() {
     New-SelfSignedCertificate
     if [[ $had_existing_nginx == false ]]; then
         New-NginxConfig
+        New-VhostExamples
         Enable-Ktls
     else
         Write-Log INFO "Existing nginx.conf preserved"
@@ -1078,6 +1329,7 @@ Remove-Nginx() {
         /var/log/nginx \
         /var/cache/nginx \
         /var/lib/nginx \
+        /var/www/acme \
         "${NGINX_PREFIX}" \
         "${NGINX_LIBDIR}/nginx"
     userdel nginx 2>/dev/null || true
