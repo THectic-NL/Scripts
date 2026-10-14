@@ -186,8 +186,8 @@ Show-Intent() {
 # ============================================================================
 
 # NGINX
-NGINX_VERSION="1.31.6"
-NGINX_SHA256="974ed5298a5e398e008704ed5db284e655fc270c596493dbccada452448fc9f1"
+NGINX_VERSION="1.31.7"
+NGINX_SHA256="89ea8a3dc171511f7325043b50e4c036248d9fad5feb7ec809c0b82d5df42c65"
 
 # PCRE2
 PCRE2_VERSION="10.49"
